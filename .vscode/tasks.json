@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "make all",
+      "type": "shell",
+      "command": "make",
+      "args": ["all"],
+      "problemMatcher": ["$gcc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "make clean",
+      "type": "shell",
+      "command": "make",
+      "args": ["clean"],
+      "problemMatcher": [],
+      "group": "build",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "flash",
+      "type": "shell",
+      "command": "make",
+      "args": ["flash"],
+      "problemMatcher": [],
+      "group": "none",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "openocd server",
+      "type": "shell",
+      "command": "make",
+      "args": ["openocd"],
+      "problemMatcher": [],
+      "isBackground": true,
+      "group": "none",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    }
+  ]
+}

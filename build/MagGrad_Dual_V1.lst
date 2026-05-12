@@ -1,0 +1,29 @@
+
+build/MagGrad_Dual_V1.elf:     file format elf32-littlearm
+
+Sections:
+Idx Name          Size      VMA       LMA       File off  Algn
+  0 .isr_vector   00000298  08000000  08000000  00001000  2**0
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+  1 .text         000137ac  08000298  08000298  00001298  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, CODE
+  2 .rodata       00000088  08013a44  08013a44  00014a44  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+  3 .ARM          00000008  08013acc  08013acc  00014acc  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+  4 .init_array   00000004  08013ad4  08013ad4  00014ad4  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+  5 .fini_array   00000004  08013ad8  08013ad8  00014ad8  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+  6 .data         0000010c  24000000  08013adc  00015000  2**2
+                  CONTENTS, ALLOC, LOAD, DATA
+  7 .bss          000020ec  2400010c  08013be8  0001510c  2**2
+                  ALLOC
+  8 ._user_heap_stack 00000600  240021f8  08013be8  000151f8  2**0
+                  ALLOC
+  9 .ARM.attributes 0000002e  00000000  00000000  0001510c  2**0
+                  CONTENTS, READONLY
+ 10 .comment      00000043  00000000  00000000  0001513a  2**0
+                  CONTENTS, READONLY
+ 11 .debug_frame  000000ac  00000000  00000000  00015180  2**2
+                  CONTENTS, READONLY, DEBUGGING, OCTETS

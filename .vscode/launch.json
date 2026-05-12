@@ -1,0 +1,31 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug with ST-Link (OpenOCD)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/MagGrad_Dual_V1.elf",
+      "runToEntryPoint": "Reset_Handler",
+      "device": "STM32H743VITx",
+      "configFiles": ["interface/stlink.cfg", "target/stm32h7x.cfg"],
+      "showDevDebugOutput": "raw",
+      "preLaunchTask": "make all",
+      "cortex-debug.gdbPath": "/opt/ST/STM32CubeCLT_1.21.0/GNU-tools-for-STM32/bin/arm-none-eabi-gdb"
+    },
+    {
+      "name": "Debug with J-Link",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "jlink",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/MagGrad_Dual_V1.elf",
+      "runToEntryPoint": "Reset_Handler",
+      "device": "STM32H743VITx",
+      "interface": "SWD",
+      "showDevDebugOutput": "raw"
+    }
+  ]
+}
