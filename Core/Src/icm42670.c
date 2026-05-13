@@ -1,5 +1,6 @@
 #include "icm42670.h"
 #include <string.h>
+#include <stdio.h>
 
 static inline void CS_L(icm42670_t *c) { HAL_GPIO_WritePin(c->cs_port, c->cs_pin, GPIO_PIN_RESET); }
 static inline void CS_H(icm42670_t *c) { HAL_GPIO_WritePin(c->cs_port, c->cs_pin, GPIO_PIN_SET); }

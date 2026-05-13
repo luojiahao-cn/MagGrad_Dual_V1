@@ -6,5 +6,13 @@
 static inline HAL_StatusTypeDef TCA9548_Select(I2C_HandleTypeDef *hi2c, uint8_t addr7, uint8_t chanMask)
 {
     uint8_t b = chanMask;
-    return HAL_I2C_Master_Transmit(hi2c, addr7 << 1, &b, 1, 10);
+    // Use 100ms timeout for TCA selection - the original 10ms was too tight
+    // and could fail if bus has any contention
+    HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(hi2c, addr7 << 1, &b, 1, 100);
+    if (status != HAL_OK) {
+        // Retry once after a small delay
+        HAL_Delay(1);
+        status = HAL_I2C_Master_Transmit(hi2c, addr7 << 1, &b, 1, 100);
+    }
+    return status;
 }

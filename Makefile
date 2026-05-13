@@ -28,7 +28,12 @@ APP_SRC  = Core/Src/main.c \
             Core/Src/spi.c \
             Core/Src/usart.c \
             Core/Src/stm32h7xx_it.c \
-            Core/Src/stm32h7xx_hal_msp.c
+            Core/Src/stm32h7xx_hal_msp.c \
+            Core/Src/icm42670.c \
+            Core/Src/ak09973d.c \
+            Core/Src/tmag3001.c \
+            Core/Src/sensor_ak09973d.c \
+            Core/Src/sensor_tmag3001.c
 
 # USB 设备
 USB_SRC  = USB_DEVICE/App/usb_device.c \

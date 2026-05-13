@@ -27,7 +27,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "icm42670.h"
+#include "sensor_ak09973d.h"
+#include "sensor_tmag3001.h"
+#include <stdio.h>
+#include <string.h>
+#include "usbd_cdc_if.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,7 +53,11 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+icm42670_raw_t imu;
+icm42670_t icm = {
+    .hspi = &hspi1,
+    .cs_port = SPI1_CS_GPIO_Port,
+    .cs_pin = SPI1_CS_Pin};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -60,6 +69,20 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// USB CDC发送字符串
+void USB_Send_String(char *str)
+{
+    CDC_Transmit_FS((uint8_t *)str, strlen(str));
+}
+
+// printf 重定向到 USB CDC
+int _write(int file, char *ptr, int len)
+{
+    (void)file;
+    CDC_Transmit_FS((uint8_t *)ptr, len);
+    return len;
+}
 
 /* USER CODE END 0 */
 
@@ -104,6 +127,33 @@ int main(void)
   MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LEDG_GPIO_Port, LEDG_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(LEDB_GPIO_Port, LEDB_Pin, GPIO_PIN_SET);
+
+  HAL_Delay(100);
+
+  // Give USB CDC time to enumerate before printing one-shot debug logs.
+  HAL_Delay(3000);
+
+  // 初始化所有传感器（只需一次）
+  printf("Main: before TMAG init\r\n");
+  Sensor_TMAG3001_Init_All();
+  printf("Main: after TMAG init\r\n");
+
+  printf("Main: before AK init\r\n");
+  Sensor_AK09973D_Init_All();
+
+  if (ICM42670_Init(&icm) != HAL_OK)
+  {
+      printf("ICM init FAILED\r\n");
+      HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_RESET);
+  }
+  else
+  {
+      printf("ICM init OK (WHO=0x67)\r\n");
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -113,8 +163,31 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    // Read ICM42670 IMU data
+    if (ICM42670_ReadRaw(&icm, &imu) == HAL_OK) {
+        printf("ICM,%d,%d,%d,%d,%d,%d,%d,%d\r\n",
+               imu.ax, imu.ay, imu.az,
+               imu.gx, imu.gy, imu.gz,
+               imu.temp);
+    }
+
+    // Read all magnetometers
+    Sensor_AK09973D_ReadAll();
+    Sensor_TMAG3001_ReadAll();
+
+    // LED 状态指示
+    static uint32_t last_toggle = 0;
+    if (HAL_GetTick() - last_toggle > 500)
+    {
+        HAL_GPIO_TogglePin(LEDG_GPIO_Port, LEDG_Pin);
+        last_toggle = HAL_GetTick();
+    }
+
+    HAL_Delay(100);
+
+    /* USER CODE END 3 */
   }
-  /* USER CODE END 3 */
 }
 
 /**

@@ -132,7 +132,9 @@ void MX_I2C3_Init(void)
 
   /* USER CODE END I2C3_Init 1 */
   hi2c3.Instance = I2C3;
-  hi2c3.Init.Timing = 0x007074AF;
+  // I2C speed at 100kHz for TMAG3001 compatibility
+  // Original timing value
+  hi2c3.Init.Timing = 0x00B02C76;
   hi2c3.Init.OwnAddress1 = 0;
   hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -494,6 +496,14 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+// Reset I2C3 peripheral
+void I2C3_Reset(void)
+{
+    // De-init then re-init I2C3
+    HAL_I2C_MspDeInit(&hi2c3);
+    MX_I2C3_Init();
+}
 
 /* USER CODE END 1 */
 
