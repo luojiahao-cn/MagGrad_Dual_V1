@@ -92,9 +92,10 @@ int _write(int file, char *ptr, int len)
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
-
+  // Immediate test - LED GPIO should work even before clock init
+  // This confirms firmware is running
+  // Note: Can't printf yet - clock not configured
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
