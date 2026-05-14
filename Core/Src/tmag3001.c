@@ -1,5 +1,4 @@
 #include "tmag3001.h"
-#include <stdio.h>
 
 // TMAG3001 I2C Protocol:
 // Note: TMAG3001 requires I2C at 100kHz (not 400kHz)
@@ -9,20 +8,24 @@
 
 static HAL_StatusTypeDef write_reg(tmag3001_t *dev, uint8_t reg, uint8_t val)
 {
-    return HAL_I2C_Mem_Write(dev->hi2c, dev->addr7 << 1, reg,
-                            I2C_MEMADD_SIZE_8BIT, &val, 1, TMAG_WRITE_TIMEOUT_MS);
+    uint8_t buf[2] = {reg, val};
+    return HAL_I2C_Master_Transmit(dev->hi2c, dev->addr7 << 1, buf, 2, TMAG_WRITE_TIMEOUT_MS);
 }
 
 static HAL_StatusTypeDef read_reg(tmag3001_t *dev, uint8_t reg, uint8_t *val)
 {
-    return HAL_I2C_Mem_Read(dev->hi2c, dev->addr7 << 1, reg,
-                            I2C_MEMADD_SIZE_8BIT, val, 1, TMAG_READ_TIMEOUT_MS);
+    HAL_StatusTypeDef status;
+    status = HAL_I2C_Master_Transmit(dev->hi2c, dev->addr7 << 1, &reg, 1, TMAG_WRITE_TIMEOUT_MS);
+    if (status != HAL_OK) return HAL_ERROR;
+    return HAL_I2C_Master_Receive(dev->hi2c, (dev->addr7 << 1) | 1, val, 1, TMAG_READ_TIMEOUT_MS);
 }
 
 static HAL_StatusTypeDef read_regs(tmag3001_t *dev, uint8_t start_reg, uint8_t *buf, uint16_t len)
 {
-    return HAL_I2C_Mem_Read(dev->hi2c, dev->addr7 << 1, start_reg,
-                            I2C_MEMADD_SIZE_8BIT, buf, len, TMAG_READ_TIMEOUT_MS);
+    HAL_StatusTypeDef status;
+    status = HAL_I2C_Master_Transmit(dev->hi2c, dev->addr7 << 1, &start_reg, 1, TMAG_WRITE_TIMEOUT_MS);
+    if (status != HAL_OK) return HAL_ERROR;
+    return HAL_I2C_Master_Receive(dev->hi2c, (dev->addr7 << 1) | 1, buf, len, TMAG_READ_TIMEOUT_MS);
 }
 
 // Read MFG ID using separate tx/rx (required for TMAG3001)
@@ -33,16 +36,10 @@ static HAL_StatusTypeDef read_mfg_id(tmag3001_t *dev, uint16_t *out_mfg)
     HAL_StatusTypeDef status;
 
     status = HAL_I2C_Master_Transmit(dev->hi2c, dev->addr7 << 1, &reg_addr, 1, TMAG_WRITE_TIMEOUT_MS);
-    if (status != HAL_OK) {
-        printf("TMAG: I2C TX failed (addr=0x%02X, err=%d)\r\n", dev->addr7, status);
-        return HAL_ERROR;
-    }
+    if (status != HAL_OK) return HAL_ERROR;
 
     status = HAL_I2C_Master_Receive(dev->hi2c, (dev->addr7 << 1) | 1, mfg_data, 2, TMAG_READ_TIMEOUT_MS);
-    if (status != HAL_OK) {
-        printf("TMAG: I2C RX failed (addr=0x%02X, err=%d)\r\n", dev->addr7, status);
-        return HAL_ERROR;
-    }
+    if (status != HAL_OK) return HAL_ERROR;
 
     *out_mfg = ((uint16_t)mfg_data[1] << 8) | mfg_data[0];
     return HAL_OK;
@@ -64,7 +61,6 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
         HAL_Delay(20);
     }
     if (retries < 0) {
-        printf("TMAG Init: MFG ID failed (addr=0x%02X)\r\n", addr7);
         return HAL_ERROR;
     }
 
@@ -85,9 +81,15 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
 HAL_StatusTypeDef TMAG3001_ReadData(tmag3001_t *dev, tmag3001_data_t *out)
 {
     // Read 7 bytes: X_MSB, X_LSB, Y_MSB, Y_LSB, Z_MSB, Z_LSB, Conv_Status
+    uint8_t reg_addr = TMAG3001_REG_X_MSB;
     uint8_t buf[7];
-    if (read_regs(dev, TMAG3001_REG_X_MSB, buf, sizeof(buf)) != HAL_OK)
-        return HAL_ERROR;
+    HAL_StatusTypeDef status;
+
+    status = HAL_I2C_Master_Transmit(dev->hi2c, dev->addr7 << 1, &reg_addr, 1, TMAG_WRITE_TIMEOUT_MS);
+    if (status != HAL_OK) return HAL_ERROR;
+
+    status = HAL_I2C_Master_Receive(dev->hi2c, (dev->addr7 << 1) | 1, buf, sizeof(buf), TMAG_READ_TIMEOUT_MS);
+    if (status != HAL_OK) return HAL_ERROR;
 
     out->x = (int16_t)((buf[0] << 8) | buf[1]);
     out->y = (int16_t)((buf[2] << 8) | buf[3]);

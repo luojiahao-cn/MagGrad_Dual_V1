@@ -75,8 +75,14 @@ void Sensor_AK09973D_Init_All(void)
     for (uint8_t ch = 1; ch < 7; ch++) {
         uint8_t mask = 1 << ch;
 
-        if (TCA9548_Select(&hi2c2, TCA_ADDR_7B, mask) != HAL_OK) continue;
-        if (HAL_I2C_IsDeviceReady(&hi2c2, AK09973D_ADDR_7B << 1, 3, 100) != HAL_OK) continue;
+        if (TCA9548_Select(&hi2c2, TCA_ADDR_7B, mask) != HAL_OK) {
+            printf("AK I2C2 CH%d: TCA fail\r\n", ch);
+            continue;
+        }
+        if (HAL_I2C_IsDeviceReady(&hi2c2, AK09973D_ADDR_7B << 1, 3, 100) != HAL_OK) {
+            printf("AK I2C2 CH%d: no device\r\n", ch);
+            continue;
+        }
 
         AK09973D_Instance_t *inst = alloc_ak_slot();
         if (inst == NULL) continue;
@@ -96,10 +102,16 @@ int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char
 {
     if (out_size < 64) return 0;
 
+    uint32_t i2c_base = (uint32_t)hi2c->Instance;
+    uint8_t is_i2c1 = (i2c_base == 0x40005400);
+
     AK09973D_Instance_t *inst = find_ak_instance(hi2c, tca_ch_mask);
     if (inst == NULL || !inst->inited) return 0;
 
-    if (TCA9548_Select(hi2c, TCA_ADDR_7B, tca_ch_mask) != HAL_OK) return 0;
+    if (TCA9548_Select(hi2c, TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
+        // I2C1 TCA failing - hardware issue
+        return 0;
+    }
 
     ak09973d_magdata_t data;
     if (AK09973D_ReadMagData(&inst->dev, &data) != HAL_OK) {
@@ -109,7 +121,7 @@ int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char
 
     int n = snprintf(out_line, out_size, "AK,%d,%d,%d,%d,%d,%d,%d\r\n",
                      tca_ch_mask,
-                     (int)(uint32_t)hi2c->Instance,
+                     (int)i2c_base,
                      data.hx, data.hy, data.hz,
                      (int)(data.status & 0x01),  // DRDY
                      (int)(data.status & 0x20)); // ERR

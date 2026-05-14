@@ -134,15 +134,15 @@ int main(void)
   HAL_Delay(100);
 
   // Give USB CDC time to enumerate before printing one-shot debug logs.
-  HAL_Delay(3000);
+  HAL_Delay(8000);
 
   // 初始化所有传感器（只需一次）
-  printf("Main: before TMAG init\r\n");
+  printf("=== INIT START ===\r\n");
   Sensor_TMAG3001_Init_All();
-  printf("Main: after TMAG init\r\n");
+  printf("=== TMAG DONE ===\r\n");
 
-  printf("Main: before AK init\r\n");
   Sensor_AK09973D_Init_All();
+  printf("=== AK DONE ===\r\n");
 
   if (ICM42670_Init(&icm) != HAL_OK)
   {
