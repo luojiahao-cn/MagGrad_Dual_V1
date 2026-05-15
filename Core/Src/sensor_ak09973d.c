@@ -87,7 +87,20 @@ void Sensor_AK09973D_Init_All(void)
         }
     }
 
-    printf("AK: I2C1=%d, I2C2=%d\r\n", i2c1_count, i2c2_count);
+    // Debug: print which channels have sensors
+    printf("AK: I2C1=%d [", i2c1_count);
+    for (int i = 0; i < AK09973D_TOTAL_NUM; i++) {
+        if (g_ak_list[i].inited && g_ak_list[i].i2c == &hi2c1) {
+            printf("%d ", g_ak_list[i].tca_ch_mask);
+        }
+    }
+    printf("], I2C2=%d [", i2c2_count);
+    for (int i = 0; i < AK09973D_TOTAL_NUM; i++) {
+        if (g_ak_list[i].inited && g_ak_list[i].i2c == &hi2c2) {
+            printf("%d ", g_ak_list[i].tca_ch_mask);
+        }
+    }
+    printf("]\r\n");
 }
 
 int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char *out_line, size_t out_size)
@@ -95,7 +108,9 @@ int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char
     if (out_size < 64) return 0;
 
     AK09973D_Instance_t *inst = find_ak_instance(hi2c, tca_ch_mask);
-    if (inst == NULL || !inst->inited) return 0;
+    if (inst == NULL || !inst->inited) {
+        return 0;
+    }
 
     if (TCA9548_Select(hi2c, TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
         TCA9548_Select(hi2c, TCA_ADDR_7B, 0);
@@ -108,8 +123,10 @@ int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char
         return 0;
     }
 
-    int n = snprintf(out_line, out_size, "AK,%d,%d,%d,%d,%d,%d,%d\r\n",
-                     tca_ch_mask,
+    // Include I2C bus identifier (1 or 2) in output
+    int i2c_bus = (hi2c == &hi2c1) ? 1 : 2;
+    int n = snprintf(out_line, out_size, "AK,%d,%d,%d,%d,%d,%d,%d,%d\r\n",
+                     i2c_bus, tca_ch_mask,
                      data.hx, data.hy, data.hz,
                      (int)(data.status & 0x01),
                      (int)(data.status & 0x20));
@@ -122,13 +139,23 @@ void Sensor_AK09973D_ReadAll(void)
 {
     char line[128];
 
+    // Read I2C1 sensors
     for (uint8_t ch = 1; ch < 7; ch++) {
-        int n = Sensor_AK09973D_ReadToCSV(&hi2c1, 1 << ch, line, sizeof(line));
-        if (n > 0) USB_Send_String(line);
+        uint8_t mask = 1 << ch;
+        AK09973D_Instance_t *inst = find_ak_instance(&hi2c1, mask);
+        if (inst != NULL && inst->inited) {
+            int n = Sensor_AK09973D_ReadToCSV(&hi2c1, mask, line, sizeof(line));
+            if (n > 0) USB_Send_String(line);
+        }
     }
 
+    // Read I2C2 sensors
     for (uint8_t ch = 1; ch < 7; ch++) {
-        int n = Sensor_AK09973D_ReadToCSV(&hi2c2, 1 << ch, line, sizeof(line));
-        if (n > 0) USB_Send_String(line);
+        uint8_t mask = 1 << ch;
+        AK09973D_Instance_t *inst = find_ak_instance(&hi2c2, mask);
+        if (inst != NULL && inst->inited) {
+            int n = Sensor_AK09973D_ReadToCSV(&hi2c2, mask, line, sizeof(line));
+            if (n > 0) USB_Send_String(line);
+        }
     }
 }
