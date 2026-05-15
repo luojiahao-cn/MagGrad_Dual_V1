@@ -9,8 +9,9 @@
 #define TMAG3001_PER_CHANNEL     3      // 3 sensors per channel
 #define TMAG3001_TCA_ADDR_7B   0x70   // TCA9548A address
 
-// Enable all 4 TCA channels for TMAG3001.
-#define TMAG3001_ACTIVE_TCA_MASK (0x02 | 0x04 | 0x08 | 0x10)
+// Enable TCA channels for TMAG3001 (skip CH3 if hardware issue).
+// CH1=0x02, CH2=0x04, CH3=0x08, CH4=0x10
+#define TMAG3001_ACTIVE_TCA_MASK (0x02 | 0x04 | 0x10)  // CH1, CH2, CH4 only (CH3 disabled)
 
 // Base addresses: A2=GND, A2=SDA, A2=3V3
 #define TMAG3001_ADDR_A2_GND   0x34

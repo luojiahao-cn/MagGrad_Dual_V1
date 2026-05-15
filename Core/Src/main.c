@@ -139,11 +139,17 @@ int main(void)
 
   // 初始化所有传感器（只需一次）
   printf("=== INIT START ===\r\n");
-  Sensor_TMAG3001_Init_All();
-  printf("=== TMAG DONE ===\r\n");
 
+  // Initialize I2C1/I2C2 sensors first (AK09973D)
   Sensor_AK09973D_Init_All();
-  printf("=== AK DONE ===\r\n");
+  HAL_Delay(100);
+
+  // Reset I2C3 before initializing TMAG3001
+  I2C3_Reset();
+  HAL_Delay(100);
+
+  // Then initialize I2C3 sensors (TMAG3001)
+  Sensor_TMAG3001_Init_All();
 
   if (ICM42670_Init(&icm) != HAL_OK)
   {

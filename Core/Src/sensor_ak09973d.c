@@ -45,19 +45,50 @@ static AK09973D_Instance_t* alloc_ak_slot(void)
     return NULL;
 }
 
+// I2C1 和 I2C2 各自有独立的 TCA9548，地址都是 0x70
+// 需要确保每次 TCA 选择之间有足够的延迟
+
+#define I2C1_TCA_ADDR  0x70
+#define I2C2_TCA_ADDR  0x70
+
 void Sensor_AK09973D_Init_All(void)
 {
     int i2c1_count = 0, i2c2_count = 0;
+
+    printf("AK: Starting I2C1 init...\r\n");
 
     // I2C1: sensors on channels 1-6
     for (uint8_t ch = 1; ch < 7; ch++) {
         uint8_t mask = 1 << ch;
 
-        if (TCA9548_Select(&hi2c1, TCA_ADDR_7B, mask) != HAL_OK) continue;
-        if (HAL_I2C_IsDeviceReady(&hi2c1, AK09973D_ADDR_7B << 1, 3, 100) != HAL_OK) continue;
+        HAL_Delay(50);  // Delay between TCA selections
+
+        if (TCA9548_Select(&hi2c1, I2C1_TCA_ADDR, 0) != HAL_OK) {
+            printf("AK-I2C1: CH%d TCA reset FAIL, retrying...\r\n", ch);
+            HAL_Delay(100);
+        }
+        HAL_Delay(20);
+
+        if (TCA9548_Select(&hi2c1, I2C1_TCA_ADDR, mask) != HAL_OK) {
+            printf("AK-I2C1: CH%d TCA select FAIL\r\n", ch);
+            HAL_Delay(50);
+            TCA9548_Select(&hi2c1, I2C1_TCA_ADDR, 0);
+            continue;
+        }
+        HAL_Delay(30);  // Wait for TCA to settle
+
+        if (HAL_I2C_IsDeviceReady(&hi2c1, AK09973D_ADDR_7B << 1, 3, 100) != HAL_OK) {
+            printf("AK-I2C1: CH%d not ready\r\n", ch);
+            TCA9548_Select(&hi2c1, I2C1_TCA_ADDR, 0);
+            continue;
+        }
 
         AK09973D_Instance_t *inst = alloc_ak_slot();
-        if (inst == NULL) continue;
+        if (inst == NULL) {
+            printf("AK-I2C1: CH%d no slot\r\n", ch);
+            TCA9548_Select(&hi2c1, I2C1_TCA_ADDR, 0);
+            continue;
+        }
 
         inst->i2c = &hi2c1;
         inst->tca_ch_mask = mask;
@@ -65,18 +96,49 @@ void Sensor_AK09973D_Init_All(void)
         if (AK09973D_Init(&inst->dev, &hi2c1, AK09973D_ADDR_7B) == HAL_OK) {
             inst->inited = 1;
             i2c1_count++;
+            printf("AK-I2C1: CH%d OK\r\n", ch);
+        } else {
+            printf("AK-I2C1: CH%d init FAIL\r\n", ch);
         }
+
+        TCA9548_Select(&hi2c1, I2C1_TCA_ADDR, 0);
+        HAL_Delay(20);
     }
+
+    printf("AK: Starting I2C2 init...\r\n");
 
     // I2C2: sensors on channels 1-6
     for (uint8_t ch = 1; ch < 7; ch++) {
         uint8_t mask = 1 << ch;
 
-        if (TCA9548_Select(&hi2c2, TCA_ADDR_7B, mask) != HAL_OK) continue;
-        if (HAL_I2C_IsDeviceReady(&hi2c2, AK09973D_ADDR_7B << 1, 3, 100) != HAL_OK) continue;
+        HAL_Delay(50);  // Delay between TCA selections
+
+        if (TCA9548_Select(&hi2c2, I2C2_TCA_ADDR, 0) != HAL_OK) {
+            printf("AK-I2C2: CH%d TCA reset FAIL, retrying...\r\n", ch);
+            HAL_Delay(100);
+        }
+        HAL_Delay(20);
+
+        if (TCA9548_Select(&hi2c2, I2C2_TCA_ADDR, mask) != HAL_OK) {
+            printf("AK-I2C2: CH%d TCA select FAIL\r\n", ch);
+            HAL_Delay(50);
+            TCA9548_Select(&hi2c2, I2C2_TCA_ADDR, 0);
+            continue;
+        }
+        HAL_Delay(30);  // Wait for TCA to settle
+
+        if (HAL_I2C_IsDeviceReady(&hi2c2, AK09973D_ADDR_7B << 1, 3, 100) != HAL_OK) {
+            printf("AK-I2C2: CH%d not ready\r\n", ch);
+            TCA9548_Select(&hi2c2, I2C2_TCA_ADDR, 0);
+            continue;
+        }
 
         AK09973D_Instance_t *inst = alloc_ak_slot();
-        if (inst == NULL) continue;
+        if (inst == NULL) {
+            printf("AK-I2C2: CH%d no slot\r\n", ch);
+            TCA9548_Select(&hi2c2, I2C2_TCA_ADDR, 0);
+            continue;
+        }
 
         inst->i2c = &hi2c2;
         inst->tca_ch_mask = mask;
@@ -84,23 +146,16 @@ void Sensor_AK09973D_Init_All(void)
         if (AK09973D_Init(&inst->dev, &hi2c2, AK09973D_ADDR_7B) == HAL_OK) {
             inst->inited = 1;
             i2c2_count++;
+            printf("AK-I2C2: CH%d OK\r\n", ch);
+        } else {
+            printf("AK-I2C2: CH%d init FAIL\r\n", ch);
         }
+
+        TCA9548_Select(&hi2c2, I2C2_TCA_ADDR, 0);
+        HAL_Delay(20);
     }
 
-    // Debug: print which channels have sensors
-    printf("AK: I2C1=%d [", i2c1_count);
-    for (int i = 0; i < AK09973D_TOTAL_NUM; i++) {
-        if (g_ak_list[i].inited && g_ak_list[i].i2c == &hi2c1) {
-            printf("%d ", g_ak_list[i].tca_ch_mask);
-        }
-    }
-    printf("], I2C2=%d [", i2c2_count);
-    for (int i = 0; i < AK09973D_TOTAL_NUM; i++) {
-        if (g_ak_list[i].inited && g_ak_list[i].i2c == &hi2c2) {
-            printf("%d ", g_ak_list[i].tca_ch_mask);
-        }
-    }
-    printf("]\r\n");
+    printf("AK: I2C1=%d, I2C2=%d\r\n", i2c1_count, i2c2_count);
 }
 
 int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char *out_line, size_t out_size)
@@ -112,14 +167,22 @@ int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char
         return 0;
     }
 
-    if (TCA9548_Select(hi2c, TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
-        TCA9548_Select(hi2c, TCA_ADDR_7B, 0);
+    uint8_t tca_addr = (hi2c == &hi2c1) ? I2C1_TCA_ADDR : I2C2_TCA_ADDR;
+
+    // First reset TCA to channel 0
+    TCA9548_Select(hi2c, tca_addr, 0);
+    HAL_Delay(5);
+
+    // Select target channel
+    if (TCA9548_Select(hi2c, tca_addr, tca_ch_mask) != HAL_OK) {
+        TCA9548_Select(hi2c, tca_addr, 0);
         return 0;
     }
+    HAL_Delay(5);  // Wait for TCA to settle
 
     ak09973d_magdata_t data;
     if (AK09973D_ReadMagData(&inst->dev, &data) != HAL_OK) {
-        TCA9548_Select(hi2c, TCA_ADDR_7B, 0);
+        TCA9548_Select(hi2c, tca_addr, 0);
         return 0;
     }
 
@@ -131,7 +194,7 @@ int Sensor_AK09973D_ReadToCSV(I2C_HandleTypeDef *hi2c, uint8_t tca_ch_mask, char
                      (int)(data.status & 0x01),
                      (int)(data.status & 0x20));
 
-    TCA9548_Select(hi2c, TCA_ADDR_7B, 0);
+    TCA9548_Select(hi2c, tca_addr, 0);
     return (n > 0 && (size_t)n < out_size) ? n : 0;
 }
 
