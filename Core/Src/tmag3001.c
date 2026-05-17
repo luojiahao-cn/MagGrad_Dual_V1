@@ -1,16 +1,15 @@
 #include "tmag3001.h"
 #include <stdio.h>
 
-// TMAG3001 I2C Protocol:
-// Note: TMAG3001 requires I2C at 100kHz (not 400kHz)
-
-#define TMAG_WRITE_TIMEOUT_MS  1000
-#define TMAG_READ_TIMEOUT_MS   1000
+// TMAG3001 standard register access uses a write of the register pointer
+// followed by a repeated START read. The device auto-increments the pointer.
+#define TMAG_WRITE_TIMEOUT_MS  50
+#define TMAG_READ_TIMEOUT_MS   50
 
 static HAL_StatusTypeDef write_reg(tmag3001_t *dev, uint8_t reg, uint8_t val)
 {
     return HAL_I2C_Mem_Write(dev->hi2c, dev->addr7 << 1, reg,
-                            I2C_MEMADD_SIZE_8BIT, &val, 1, TMAG_WRITE_TIMEOUT_MS);
+                             I2C_MEMADD_SIZE_8BIT, &val, 1, TMAG_WRITE_TIMEOUT_MS);
 }
 
 static HAL_StatusTypeDef read_reg(tmag3001_t *dev, uint8_t reg, uint8_t *val)
@@ -25,27 +24,31 @@ static HAL_StatusTypeDef read_regs(tmag3001_t *dev, uint8_t start_reg, uint8_t *
                             I2C_MEMADD_SIZE_8BIT, buf, len, TMAG_READ_TIMEOUT_MS);
 }
 
-// Read MFG ID using separate tx/rx (required for TMAG3001)
 static HAL_StatusTypeDef read_mfg_id(tmag3001_t *dev, uint16_t *out_mfg)
 {
-    uint8_t reg_addr = TMAG3001_REG_MFG_LSB;
     uint8_t mfg_data[2];
-    HAL_StatusTypeDef status;
-
-    status = HAL_I2C_Master_Transmit(dev->hi2c, dev->addr7 << 1, &reg_addr, 1, TMAG_WRITE_TIMEOUT_MS);
-    if (status != HAL_OK) {
-        printf("TMAG: I2C TX failed (addr=0x%02X, err=%d)\r\n", dev->addr7, status);
-        return HAL_ERROR;
-    }
-
-    status = HAL_I2C_Master_Receive(dev->hi2c, (dev->addr7 << 1) | 1, mfg_data, 2, TMAG_READ_TIMEOUT_MS);
-    if (status != HAL_OK) {
-        printf("TMAG: I2C RX failed (addr=0x%02X, err=%d)\r\n", dev->addr7, status);
-        return HAL_ERROR;
+    HAL_StatusTypeDef s = read_regs(dev, TMAG3001_REG_MFG_LSB, mfg_data, sizeof(mfg_data));
+    if (s != HAL_OK) {
+        return s;
     }
 
     *out_mfg = ((uint16_t)mfg_data[1] << 8) | mfg_data[0];
     return HAL_OK;
+}
+
+HAL_StatusTypeDef TMAG3001_Probe(I2C_HandleTypeDef *hi2c, uint8_t addr7)
+{
+    tmag3001_t dev = {
+        .hi2c = hi2c,
+        .addr7 = addr7
+    };
+    uint16_t mfg_id;
+
+    if (read_mfg_id(&dev, &mfg_id) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    return (mfg_id == 0x5449) ? HAL_OK : HAL_ERROR;
 }
 
 HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_t addr7)
@@ -53,28 +56,49 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
     dev->hi2c = hi2c;
     dev->addr7 = addr7;
 
-    // Retry MFG ID read several times
+    // Presence check
     uint16_t mfg_id;
-    int retries = 10;
+    int retries = 15;
+    HAL_StatusTypeDef last_status = HAL_OK;
     while (retries-- > 0) {
-        HAL_StatusTypeDef status = read_mfg_id(dev, &mfg_id);
-        if (status == HAL_OK && mfg_id == 0x5449) {
+        last_status = read_mfg_id(dev, &mfg_id);
+        if (last_status == HAL_OK && mfg_id == 0x5449) {
+            printf("TMAG 0x%02X: MFG OK 0x%04X (retries_left=%d)\r\n", addr7, mfg_id, retries);
             break;
+        }
+        if (retries % 5 == 0) {
+            printf("TMAG 0x%02X: MFG retry %d, status=%d, id=0x%04X\r\n",
+                   addr7, retries, (int)last_status, mfg_id);
         }
         HAL_Delay(20);
     }
     if (retries < 0) {
-        printf("TMAG Init: MFG ID failed (addr=0x%02X)\r\n", addr7);
+        printf("TMAG 0x%02X: MFG ID FAIL after 15 retries (last_status=%d, id=0x%04X)\r\n",
+               addr7, (int)last_status, mfg_id);
         return HAL_ERROR;
     }
 
     // Write SENS_CFG1 (enable X, Y, Z axes)
-    if (write_reg(dev, TMAG3001_REG_SENS_CFG1, TMAG3001_SENS_XYZ_EN) != HAL_OK)
-        return HAL_ERROR;
+    {
+        HAL_StatusTypeDef s = write_reg(dev, TMAG3001_REG_SENS_CFG1, TMAG3001_SENS_XYZ_EN);
+        if (s != HAL_OK) {
+            printf("TMAG 0x%02X: write SENS_CFG1 FAIL (status=%d, i2c_err=0x%08lX)\r\n",
+                   addr7, (int)s, (unsigned long)HAL_I2C_GetError(dev->hi2c));
+            return HAL_ERROR;
+        }
+        printf("TMAG 0x%02X: SENS_CFG1 OK\r\n", addr7);
+    }
 
     // Write DEV_CFG2 (continuous conversion mode)
-    if (write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_MODE_CONT) != HAL_OK)
-        return HAL_ERROR;
+    {
+        HAL_StatusTypeDef s = write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_MODE_CONT);
+        if (s != HAL_OK) {
+            printf("TMAG 0x%02X: write DEV_CFG2 FAIL (status=%d, i2c_err=0x%08lX)\r\n",
+                   addr7, (int)s, (unsigned long)HAL_I2C_GetError(dev->hi2c));
+            return HAL_ERROR;
+        }
+        printf("TMAG 0x%02X: DEV_CFG2 OK\r\n", addr7);
+    }
 
     // Wait for first conversion to complete
     HAL_Delay(50);

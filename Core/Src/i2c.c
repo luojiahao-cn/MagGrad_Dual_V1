@@ -21,6 +21,7 @@
 #include "i2c.h"
 
 /* USER CODE BEGIN 0 */
+#include <stdio.h>
 /* USER CODE END 0 */
 
 I2C_HandleTypeDef hi2c1;
@@ -131,8 +132,8 @@ void MX_I2C3_Init(void)
 
   /* USER CODE END I2C3_Init 1 */
   hi2c3.Instance = I2C3;
-  // I2C speed at 100kHz for TMAG3001 compatibility
-  // Original timing value
+  // I2C3/TMAG bus is wired through a mux and long sensor branches; this
+  // timing has been stable on the board while scanning downstream devices.
   hi2c3.Init.Timing = 0x00B02C76;
   hi2c3.Init.OwnAddress1 = 0;
   hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -192,7 +193,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
     */
     GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;  // Enable pull-up for I2C
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -268,7 +269,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
     */
     GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;  // Enable pull-up for I2C
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF4_I2C2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -345,14 +346,14 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
     */
     GPIO_InitStruct.Pin = GPIO_PIN_9;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;  // Enable pull-up for I2C
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF4_I2C3;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
     GPIO_InitStruct.Pin = GPIO_PIN_8;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;  // Enable pull-up for I2C
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF4_I2C3;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
@@ -460,13 +461,117 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 
 /* USER CODE BEGIN 1 */
 
-// Reset I2C3 peripheral
+// Full I2C3 reset with GPIO reconfiguration
 void I2C3_Reset(void)
 {
-    HAL_I2C_MspDeInit(&hi2c3);
+    // 1. Disable I2C3 interrupts
+    HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
+    HAL_NVIC_DisableIRQ(I2C3_ER_IRQn);
+
+    // 2. Deinit I2C3 peripheral
+    HAL_I2C_DeInit(&hi2c3);
     HAL_Delay(5);
+
+    // 3. Deinit GPIO for I2C3 (PA8=SCL, PC9=SDA)
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_9);
+
+    // 4. Re-init I2C3
     MX_I2C3_Init();
+    HAL_Delay(10);
+
+    // 5. Re-enable interrupts
+    HAL_NVIC_SetPriority(I2C3_EV_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(I2C3_EV_IRQn);
+    HAL_NVIC_SetPriority(I2C3_ER_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(I2C3_ER_IRQn);
+
+    HAL_Delay(5);
+}
+
+// I2C总线恢复：通过RCC重置I2C3外设并清除GPIO卡死状态
+void I2C3_BusRecover(void)
+{
+    // 1. 首先禁用I2C3中断，避免干扰
+    HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
+    HAL_NVIC_DisableIRQ(I2C3_ER_IRQn);
+
+    // 2. 强制复位I2C3外设（立即生效，释放总线控制权）
+    __HAL_RCC_I2C3_FORCE_RESET();
+    HAL_Delay(10);
+
+    // 3. 配置GPIO为推挽输出，手动控制SCL和SDA
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = GPIO_PIN_8;  // PA8 = SCL
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_9;  // PC9 = SDA
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    // 确保初始状态：SCL和SDA都是高电平
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_Delay(100);
+
+    // 4. 如果SDA被从设备拉低，手动释放它
+    // 检测SDA状态
+    GPIO_PinState sda_state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_9);
+    if (sda_state == GPIO_PIN_RESET) {
+        // SDA被拉低，先释放SCL
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+        HAL_Delay(5);
+        // 发送一个SCL脉冲
+        for (int j = 0; j < 9; j++) {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+            HAL_Delay(5);
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+            HAL_Delay(5);
+        }
+        // 然后拉高SDA
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+        HAL_Delay(50);
+    }
+
+    // 5. 发送多个SCL时钟脉冲来清除任何卡住的从设备
+    for (int i = 0; i < 40; i++) {
+        // SCL低
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+        HAL_Delay(5);
+        // SCL高
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+        HAL_Delay(5);
+    }
+
+    // 6. 发送STOP条件：SDA从低变高
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_Delay(100);
+
+    // 7. 释放I2C3复位
+    __HAL_RCC_I2C3_RELEASE_RESET();
     HAL_Delay(20);
+
+    // 8. 恢复GPIO为I2C模式
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_9);
+    HAL_Delay(20);
+
+    // 9. 重新初始化I2C3
+    MX_I2C3_Init();
+    HAL_Delay(100);
+
+    // 10. 重新启用中断
+    HAL_NVIC_SetPriority(I2C3_EV_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(I2C3_EV_IRQn);
+    HAL_NVIC_SetPriority(I2C3_ER_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(I2C3_ER_IRQn);
+
+    HAL_Delay(100);
 }
 
 /* USER CODE END 1 */

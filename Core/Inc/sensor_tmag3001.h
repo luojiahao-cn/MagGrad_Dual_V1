@@ -3,15 +3,12 @@
 #include "i2c.h"
 
 // TMAG3001 configuration
-// I2C3: 4 channels x 3 sensors = 12 total (three sensors per channel)
-#define TMAG3001_TOTAL_NUM      12     // 12 total sensors
-#define TMAG3001_CHANNELS       4      // 4 TCA channels (1-4)
-#define TMAG3001_PER_CHANNEL     3      // 3 sensors per channel
-#define TMAG3001_TCA_ADDR_7B   0x70   // TCA9548A address
-
-// Enable TCA channels for TMAG3001 (skip CH3 if hardware issue).
-// CH1=0x02, CH2=0x04, CH3=0x08, CH4=0x10
-#define TMAG3001_ACTIVE_TCA_MASK (0x02 | 0x04 | 0x10)  // CH1, CH2, CH4 only (CH3 disabled)
+// I2C3: 4 channels x 3 sensors = 12 total
+#define TMAG3001_TOTAL_NUM      12
+#define TMAG3001_CHANNELS       4
+#define TMAG3001_PER_CHANNEL     3
+#define TMAG3001_TCA_ADDR_7B   0x70
+#define TMAG3001_ACTIVE_TCA_MASK (0x02 | 0x04 | 0x08 | 0x10)  // CH1-CH4
 
 // Base addresses: A2=GND, A2=SDA, A2=3V3
 #define TMAG3001_ADDR_A2_GND   0x34
