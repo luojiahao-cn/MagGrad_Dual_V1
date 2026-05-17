@@ -1,5 +1,4 @@
 #include "tmag3001.h"
-#include <stdio.h>
 
 // TMAG3001 standard register access uses a write of the register pointer
 // followed by a repeated START read. The device auto-increments the pointer.
@@ -61,43 +60,23 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
     int retries = 15;
     HAL_StatusTypeDef last_status = HAL_OK;
     while (retries-- > 0) {
-        last_status = read_mfg_id(dev, &mfg_id);
-        if (last_status == HAL_OK && mfg_id == 0x5449) {
-            printf("TMAG 0x%02X: MFG OK 0x%04X (retries_left=%d)\r\n", addr7, mfg_id, retries);
+        if (read_mfg_id(dev, &mfg_id) == HAL_OK && mfg_id == 0x5449) {
             break;
-        }
-        if (retries % 5 == 0) {
-            printf("TMAG 0x%02X: MFG retry %d, status=%d, id=0x%04X\r\n",
-                   addr7, retries, (int)last_status, mfg_id);
         }
         HAL_Delay(20);
     }
     if (retries < 0) {
-        printf("TMAG 0x%02X: MFG ID FAIL after 15 retries (last_status=%d, id=0x%04X)\r\n",
-               addr7, (int)last_status, mfg_id);
         return HAL_ERROR;
     }
 
     // Write SENS_CFG1 (enable X, Y, Z axes)
-    {
-        HAL_StatusTypeDef s = write_reg(dev, TMAG3001_REG_SENS_CFG1, TMAG3001_SENS_XYZ_EN);
-        if (s != HAL_OK) {
-            printf("TMAG 0x%02X: write SENS_CFG1 FAIL (status=%d, i2c_err=0x%08lX)\r\n",
-                   addr7, (int)s, (unsigned long)HAL_I2C_GetError(dev->hi2c));
-            return HAL_ERROR;
-        }
-        printf("TMAG 0x%02X: SENS_CFG1 OK\r\n", addr7);
+    if (write_reg(dev, TMAG3001_REG_SENS_CFG1, TMAG3001_SENS_XYZ_EN) != HAL_OK) {
+        return HAL_ERROR;
     }
 
     // Write DEV_CFG2 (continuous conversion mode)
-    {
-        HAL_StatusTypeDef s = write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_MODE_CONT);
-        if (s != HAL_OK) {
-            printf("TMAG 0x%02X: write DEV_CFG2 FAIL (status=%d, i2c_err=0x%08lX)\r\n",
-                   addr7, (int)s, (unsigned long)HAL_I2C_GetError(dev->hi2c));
-            return HAL_ERROR;
-        }
-        printf("TMAG 0x%02X: DEV_CFG2 OK\r\n", addr7);
+    if (write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_MODE_CONT) != HAL_OK) {
+        return HAL_ERROR;
     }
 
     // Wait for first conversion to complete

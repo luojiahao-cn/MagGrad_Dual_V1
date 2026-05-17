@@ -26,12 +26,9 @@ static const uint8_t g_tmag_addrs[TMAG3001_PER_CHANNEL] = {
     TMAG3001_ADDR_A2_3V3
 };
 
-// All possible TMAG3001 addresses to try as fallback
-static const uint8_t g_tmag_all_addrs[] = {0x34, 0x35, 0x36, 0x37};
-
 static void tmag_hardware_reset(void);
 
-// TMAG硬件复位：通过I2C3_RESET线复位TCA Mux和所有TMAG传感器
+// TMAG hardware reset via I2C3_RESET line
 static void tmag_hardware_reset(void)
 {
     HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
@@ -62,37 +59,24 @@ void Sensor_TMAG3001_Init_All(void)
 
     memset(g_tmag_list, 0, sizeof(g_tmag_list));
 
-    printf("TMAG: init start\r\n");
-    fflush(stdout);
-
     tmag_hardware_reset();
 
     // Test TCA
     if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0) != HAL_OK) {
-        printf("TMAG: TCA not responding - abort\r\n");
-        fflush(stdout);
         return;
     }
-    printf("TMAG: TCA OK\r\n");
-    fflush(stdout);
 
-    // Direct init: CH1, CH2, CH3, CH4 (normal order)
-    uint8_t ch_order[] = {1, 2, 3, 4};
     for (int ci = 0; ci < 4 && idx < TMAG3001_TOTAL_NUM; ci++) {
-        uint8_t ch = ch_order[ci];
-        uint8_t mask = 1 << ch;
+        uint8_t mask = 1 << (ci + 1);
 
         if ((TMAG3001_ACTIVE_TCA_MASK & mask) == 0U) continue;
 
-        // Select TCA channel directly (no prior deselect needed)
+        // Select TCA channel directly
         if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask) != HAL_OK) {
-            printf("TMAG CH%d: TCA select FAIL\r\n", ch);
-            fflush(stdout);
             continue;
         }
         HAL_Delay(20);
 
-        int ch_ok = 0;
         for (uint8_t sub = 0; sub < TMAG3001_PER_CHANNEL && idx < TMAG3001_TOTAL_NUM; sub++) {
             TMAG3001_Instance_t *inst = &g_tmag_list[idx];
             uint8_t addr = g_tmag_addrs[sub];
@@ -102,14 +86,10 @@ void Sensor_TMAG3001_Init_All(void)
                 inst->addr7 = addr;
                 inst->i2c = &hi2c3;
                 inst->inited = 1;
-                ch_ok++;
             }
             idx++;
             HAL_Delay(20);
         }
-
-        printf("TMAG CH%d: %d/%d OK\r\n", ch, ch_ok, TMAG3001_PER_CHANNEL);
-        fflush(stdout);
     }
 
     // Count first-pass results
@@ -118,10 +98,7 @@ void Sensor_TMAG3001_Init_All(void)
         if (g_tmag_list[i].inited) inited++;
     }
 
-    printf("TMAG: first pass %d/%d OK\r\n", inited, TMAG3001_TOTAL_NUM);
-    fflush(stdout);
-
-    // Reinit phase: re-init only the channels that worked, in CH4,CH1,CH2 order
+    // Reinit phase: re-init only the channels that worked
     if (inited > 0) {
         // Save (mask, addr) from first pass
         uint8_t saved_masks[TMAG3001_TOTAL_NUM] = {0};
@@ -139,7 +116,6 @@ void Sensor_TMAG3001_Init_All(void)
         tmag_hardware_reset();
 
         int reinit_ok = 0;
-        uint8_t ch_order[] = {1, 2, 3, 4};
 
         for (int si = 0; si < saved_count && reinit_ok < saved_count; si++) {
             uint8_t mask = saved_masks[si];
@@ -147,8 +123,6 @@ void Sensor_TMAG3001_Init_All(void)
 
             TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
             if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask) != HAL_OK) {
-                printf("TMAG reinit mask 0x%02X: TCA select FAIL, skip\r\n", mask);
-                fflush(stdout);
                 continue;
             }
             HAL_Delay(20);
@@ -161,18 +135,10 @@ void Sensor_TMAG3001_Init_All(void)
                 inst->inited = 1;
                 reinit_ok++;
             } else {
-                printf("TMAG reinit mask 0x%02X addr 0x%02X: FAIL, skip\r\n", mask, addr);
-                fflush(stdout);
                 I2C3_BusRecover();
             }
         }
-
-        printf("TMAG: reinit %d/%d OK\r\n", reinit_ok, saved_count);
-        fflush(stdout);
     }
-
-    printf("TMAG: init done\r\n");
-    fflush(stdout);
 }
 
 int Sensor_TMAG3001_ReadToCSV(uint8_t tca_ch_mask, char *out_line, size_t out_size)
