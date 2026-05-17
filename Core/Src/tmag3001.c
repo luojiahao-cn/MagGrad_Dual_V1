@@ -4,6 +4,8 @@
 // followed by a repeated START read. The device auto-increments the pointer.
 #define TMAG_WRITE_TIMEOUT_MS  50
 #define TMAG_READ_TIMEOUT_MS   50
+#define TMAG_READY_TIMEOUT_MS  25
+#define TMAG_PROBE_RETRIES     15
 
 static HAL_StatusTypeDef write_reg(tmag3001_t *dev, uint8_t reg, uint8_t val)
 {
@@ -35,6 +37,57 @@ static HAL_StatusTypeDef read_mfg_id(tmag3001_t *dev, uint16_t *out_mfg)
     return HAL_OK;
 }
 
+static HAL_StatusTypeDef read_mfg_id_retry(tmag3001_t *dev, uint16_t *out_mfg)
+{
+    HAL_StatusTypeDef last = HAL_ERROR;
+
+    for (int i = 0; i < TMAG_PROBE_RETRIES; i++) {
+        last = read_mfg_id(dev, out_mfg);
+        if (last == HAL_OK && *out_mfg == 0x5449) {
+            return HAL_OK;
+        }
+        HAL_Delay(20);
+    }
+
+    return last;
+}
+
+static HAL_StatusTypeDef write_checked(tmag3001_t *dev, uint8_t reg, uint8_t val)
+{
+    uint8_t rb = 0;
+    HAL_StatusTypeDef s = write_reg(dev, reg, val);
+    if (s != HAL_OK) {
+        return s;
+    }
+
+    HAL_Delay(1);
+    s = read_reg(dev, reg, &rb);
+    if (s != HAL_OK) {
+        return s;
+    }
+
+    return (rb == val) ? HAL_OK : HAL_ERROR;
+}
+
+static HAL_StatusTypeDef wait_result_ready(tmag3001_t *dev)
+{
+    uint32_t start = HAL_GetTick();
+    uint8_t status = 0;
+
+    do {
+        HAL_StatusTypeDef s = read_reg(dev, TMAG3001_REG_CONV_STATUS, &status);
+        if (s != HAL_OK) {
+            return s;
+        }
+        if ((status & TMAG3001_STATUS_DRDY) != 0) {
+            return HAL_OK;
+        }
+        HAL_Delay(1);
+    } while ((HAL_GetTick() - start) < TMAG_READY_TIMEOUT_MS);
+
+    return HAL_TIMEOUT;
+}
+
 HAL_StatusTypeDef TMAG3001_Probe(I2C_HandleTypeDef *hi2c, uint8_t addr7)
 {
     tmag3001_t dev = {
@@ -43,7 +96,7 @@ HAL_StatusTypeDef TMAG3001_Probe(I2C_HandleTypeDef *hi2c, uint8_t addr7)
     };
     uint16_t mfg_id;
 
-    if (read_mfg_id(&dev, &mfg_id) != HAL_OK) {
+    if (read_mfg_id_retry(&dev, &mfg_id) != HAL_OK) {
         return HAL_ERROR;
     }
 
@@ -55,34 +108,53 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
     dev->hi2c = hi2c;
     dev->addr7 = addr7;
 
-    // Presence check
     uint16_t mfg_id;
-    int retries = 15;
-    HAL_StatusTypeDef last_status = HAL_OK;
-    while (retries-- > 0) {
-        if (read_mfg_id(dev, &mfg_id) == HAL_OK && mfg_id == 0x5449) {
-            break;
-        }
-        HAL_Delay(20);
-    }
-    if (retries < 0) {
+    if (read_mfg_id_retry(dev, &mfg_id) != HAL_OK || mfg_id != 0x5449) {
         return HAL_ERROR;
     }
 
-    // Write SENS_CFG1 (enable X, Y, Z axes)
-    if (write_reg(dev, TMAG3001_REG_SENS_CFG1, TMAG3001_SENS_XYZ_EN) != HAL_OK) {
+    // Configure only while the device is in standby; enter continuous mode last.
+    if (write_checked(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_DEV_CFG2_STANDBY) != HAL_OK) {
         return HAL_ERROR;
     }
 
-    // Write DEV_CFG2 (continuous conversion mode)
-    if (write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_MODE_CONT) != HAL_OK) {
+    if (write_checked(dev, TMAG3001_REG_DEV_CFG1, TMAG3001_DEV_CFG1_DEFAULT) != HAL_OK) {
         return HAL_ERROR;
     }
 
-    // Wait for first conversion to complete
-    HAL_Delay(50);
+    if (write_checked(dev, TMAG3001_REG_SENS_CFG1, TMAG3001_SENS_CFG1_XYZ_EN) != HAL_OK) {
+        return HAL_ERROR;
+    }
 
-    return HAL_OK;
+    if (write_checked(dev, TMAG3001_REG_SENS_CFG2, TMAG3001_SENS_CFG2_RAW_DEFAULT) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    if (write_checked(dev, TMAG3001_REG_THR_CFG1, 0x00) != HAL_OK ||
+        write_checked(dev, TMAG3001_REG_THR_CFG2, 0x00) != HAL_OK ||
+        write_checked(dev, TMAG3001_REG_THR_CFG3, 0x00) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    if (write_checked(dev, TMAG3001_REG_SENS_CFG3, TMAG3001_SENS_CFG3_DEFAULT) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    if (write_checked(dev, TMAG3001_REG_INT_CFG1, TMAG3001_INT_CFG1_DISABLED) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    if (write_checked(dev, TMAG3001_REG_SENS_CFG4, 0x00) != HAL_OK ||
+        write_checked(dev, TMAG3001_REG_SENS_CFG5, 0x00) != HAL_OK ||
+        write_checked(dev, TMAG3001_REG_SENS_CFG6, 0x00) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    if (write_checked(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_DEV_CFG2_CONTINUOUS) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    return wait_result_ready(dev);
 }
 
 HAL_StatusTypeDef TMAG3001_ReadData(tmag3001_t *dev, tmag3001_data_t *out)
@@ -103,9 +175,18 @@ HAL_StatusTypeDef TMAG3001_ReadData(tmag3001_t *dev, tmag3001_data_t *out)
 uint8_t TMAG3001_IsDataReady(tmag3001_t *dev)
 {
     uint8_t status;
-    if (read_reg(dev, TMAG3001_REG_STATUS, &status) == HAL_OK)
+    if (read_reg(dev, TMAG3001_REG_CONV_STATUS, &status) == HAL_OK)
         return (status & TMAG3001_STATUS_DRDY) ? 1 : 0;
     return 0;
+}
+
+HAL_StatusTypeDef TMAG3001_ReadConfig(tmag3001_t *dev, uint8_t *buf, uint16_t len)
+{
+    if (len == 0) {
+        return HAL_OK;
+    }
+
+    return read_regs(dev, TMAG3001_REG_DEV_CFG1, buf, len);
 }
 
 HAL_StatusTypeDef TMAG3001_SetAddress(tmag3001_t *dev, uint8_t new_addr7)
