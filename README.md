@@ -74,7 +74,7 @@ configuration problem.
 TMAG3001 is configured from standby, with continuous mode written last:
 
 ```text
-Device_Config_1 = 0x00
+Device_Config_1 = 0x00   CRC off, Conv_AVG=0 fastest 1x, standard I2C read
 Device_Config_2 = 0x00   before configuration
 Sensor_Config_1 = 0x70   XYZ magnetic channels enabled
 Sensor_Config_2 = 0x00   raw XYZ, default ranges, angle disabled
@@ -82,12 +82,21 @@ THR_Config_1..3 = 0x00
 Sensor_Config_3 = 0x00
 INT_Config_1 = 0x00      interrupts disabled
 Sensor_Config_4..6 = 0x00
-Device_Config_2 = 0x02   continuous conversion mode
+Device_Config_2 = 0x02   LP_LN=0 low-current, Operating_Mode=2h continuous mode
 ```
 
-After entering continuous mode, the driver polls `Conv_Status.Result_Status`
-before accepting the sensor as initialized. The runtime firmware initializes AK
-and TMAG once, then loops on reads.
+Each configuration write is checked with a single-register readback. Then the
+driver writes `Device_Config_2 = 0x02` last and polls `Conv_Status.Result_Status`
+before accepting the sensor as initialized. Do not perform a multi-register
+configuration readback around TMAG initialization; on the current I2C3 muxed
+hardware that caused `CFG READ FAIL` on address `0x34` and destabilized later
+channel selects. The runtime firmware initializes AK and TMAG once, then loops
+on reads.
+
+`Device_Config_2.LP_LN=1` low-noise mode is optional in the datasheet, but on
+the current muxed I2C3 hardware it caused TMAG initialization to fail during
+2026-05-18 testing. Keep `LP_LN=0` and `Operating_Mode=2h` for the stable
+continuous configuration.
 
 Do not switch TMAG3001 `Device_Config_1.I2C_RD[1:0]` to the direct result-read
 mode without a matching recovery path. In testing, direct-read mode caused later
@@ -96,10 +105,11 @@ manufacturer-ID register reads to return measurement-frame bytes instead of
 initialization. Keep that force-write in place so a previous bad configuration
 does not survive a reset line pulse.
 
-For stable full-frame serial output, the TMAG read path keeps a 10 ms mux-settle
-delay after each TCA channel selection and a 5 ms delay after each successful
-sensor read. Removing the per-sensor 5 ms delay raised the AK-only loop rate but
-caused TMAG CSV rows to disappear in the current USB CDC/read timing setup.
+For stable full-frame serial output, the TMAG read path currently keeps a 1 ms
+mux-settle delay after each TCA channel selection and a 2 ms delay after each
+successful sensor read. In 2026-05-18 testing this produced about 23 full
+12-sensor TMAG frames per second. Removing the delays entirely caused TMAG CSV
+rows to disappear in the current I2C3/TCA/USB CDC timing setup.
 
 AK09973D I2C1 pins are:
 

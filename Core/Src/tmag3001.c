@@ -159,7 +159,11 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
         return HAL_ERROR;
     }
 
-    return wait_result_ready(dev);
+    if (wait_result_ready(dev) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    return HAL_OK;
 }
 
 HAL_StatusTypeDef TMAG3001_ReadData(tmag3001_t *dev, tmag3001_data_t *out)

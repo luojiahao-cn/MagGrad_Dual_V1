@@ -33,13 +33,35 @@
 #define TMAG3001_REG_STATUS       TMAG3001_REG_CONV_STATUS
 #define TMAG3001_REG_DEV_STAT     0x1C
 
-// Device_Config_1: CRC disabled, standard 3-byte I2C read, 1x averaging.
-#define TMAG3001_DEV_CFG1_DEFAULT       0x00
+// Device_Config_1: CRC_EN=0, MAG_Tempco=0, Conv_AVG=0 (1x/fastest),
+// I2C_RD=0 (standard register read).
+#define TMAG3001_DEV_CFG1_CRC_DISABLED      0x00
+#define TMAG3001_DEV_CFG1_TEMPCO_NONE       0x00
+#define TMAG3001_DEV_CFG1_CONV_AVG_1X       0x00
+#define TMAG3001_DEV_CFG1_I2C_RD_STANDARD   0x00
+#define TMAG3001_DEV_CFG1_DEFAULT           (TMAG3001_DEV_CFG1_CRC_DISABLED | \
+                                             TMAG3001_DEV_CFG1_TEMPCO_NONE | \
+                                             TMAG3001_DEV_CFG1_CONV_AVG_1X | \
+                                             TMAG3001_DEV_CFG1_I2C_RD_STANDARD)
 
-// Device_Config_2
-#define TMAG3001_DEV_CFG2_STANDBY       0x00
-#define TMAG3001_DEV_CFG2_CONTINUOUS    0x02
-#define TMAG3001_DEV_CFG2_LOW_NOISE     0x10
+// Device_Config_2: Operating_Mode[1:0] is bits [1:0]; 2h selects continuous
+// measure mode. LP_LN=0 keeps the default low-active-current mode; LP_LN=1
+// low-noise mode failed initialization on the current muxed I2C3 hardware.
+#define TMAG3001_DEV_CFG2_THR_HYST_2LSB     0x00
+#define TMAG3001_DEV_CFG2_LOW_CURRENT       0x00
+#define TMAG3001_DEV_CFG2_LOW_NOISE         0x10
+#define TMAG3001_DEV_CFG2_GLITCH_FILTER_ON  0x00
+#define TMAG3001_DEV_CFG2_TRIGGER_I2C       0x00
+#define TMAG3001_DEV_CFG2_MODE_STANDBY      0x00
+#define TMAG3001_DEV_CFG2_MODE_SLEEP        0x01
+#define TMAG3001_DEV_CFG2_MODE_CONTINUOUS   0x02
+#define TMAG3001_DEV_CFG2_MODE_WAKE_SLEEP   0x03
+#define TMAG3001_DEV_CFG2_STANDBY           TMAG3001_DEV_CFG2_MODE_STANDBY
+#define TMAG3001_DEV_CFG2_CONTINUOUS        (TMAG3001_DEV_CFG2_THR_HYST_2LSB | \
+                                             TMAG3001_DEV_CFG2_LOW_CURRENT | \
+                                             TMAG3001_DEV_CFG2_GLITCH_FILTER_ON | \
+                                             TMAG3001_DEV_CFG2_TRIGGER_I2C | \
+                                             TMAG3001_DEV_CFG2_MODE_CONTINUOUS)
 
 // Sensor_Config_1: MAG_CH_EN lives in bits [7:4].
 #define TMAG3001_SENS_CFG1_XYZ_EN       0x70
