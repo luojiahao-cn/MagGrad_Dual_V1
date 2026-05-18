@@ -11,7 +11,10 @@
 
 #define AK09973D_TCA_ADDR_7B  0x70
 #define AK09973D_COUNT         12
-#define AK09973D_ACTIVE_CNTL2  AK09973D_MODE_10HZ
+#define AK09973D_ACTIVE_CNTL2  AK09973D_MODE_100HZ
+#define AK09973D_DESELECT_AFTER_READ  0
+#define AK09973D_TCA_SETTLE_MS        0
+#define AK09973D_POST_READ_MS         0
 
 void Sensor_AK09973D_Init_All(void);
 int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size);

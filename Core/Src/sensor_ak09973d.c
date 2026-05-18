@@ -4,6 +4,7 @@
 
 #include "main.h"
 #include "i2c.h"
+#include "csv_writer.h"
 #include "sensor_ak09973d.h"
 #include "tca9548.h"
 
@@ -158,6 +159,44 @@ static HAL_StatusTypeDef ak_select_channel(uint8_t bus, uint8_t mask)
     return status;
 }
 
+static int csv_append_ak_line(char *out, size_t out_size, size_t *off,
+                              uint8_t bus, uint8_t mask,
+                              const ak09973d_magdata_t *data)
+{
+    return CSV_AppendString(out, out_size, off, "AK,") &&
+           CSV_AppendU32(out, out_size, off, bus) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendHex8(out, out_size, off, mask) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendI32(out, out_size, off, data->hx) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendI32(out, out_size, off, data->hy) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendI32(out, out_size, off, data->hz) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendU32(out, out_size, off, (data->status & 0x01U) ? 1U : 0U) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendU32(out, out_size, off, (data->status & AK09973D_ST_ERR) ? 1U : 0U) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendU32(out, out_size, off, (data->status & AK09973D_ST_DOR) ? 1U : 0U) &&
+           CSV_AppendCRLF(out, out_size, off);
+}
+
+static int csv_append_akerr_line(char *out, size_t out_size, size_t *off,
+                                 uint8_t bus, uint8_t mask,
+                                 const char *kind, uint32_t error)
+{
+    return CSV_AppendString(out, out_size, off, "AKERR,") &&
+           CSV_AppendU32(out, out_size, off, bus) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendHex8(out, out_size, off, mask) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendString(out, out_size, off, kind) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendHex32(out, out_size, off, error) &&
+           CSV_AppendCRLF(out, out_size, off);
+}
+
 void Sensor_AK09973D_Init_All(void)
 {
     memset(g_valid, 0, sizeof(g_valid));
@@ -243,39 +282,45 @@ int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size)
 
     for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
         I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
-        int written = 0;
 
         if (ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask) != HAL_OK) {
-            written = snprintf(out + off, out_size - off, "AKERR,%d,0x%02X,TCA,0x%08lX\r\n",
-                               g_valid[i].i2c_bus, g_valid[i].mask, (unsigned long)HAL_I2C_GetError(hi2c));
-            if (written <= 0 || (size_t)written >= out_size - off) break;
-            off += (size_t)written;
+            if (!csv_append_akerr_line(out, out_size, &off,
+                                       g_valid[i].i2c_bus, g_valid[i].mask,
+                                       "TCA", HAL_I2C_GetError(hi2c))) {
+                break;
+            }
             continue;
         }
-        HAL_Delay(1);
+#if AK09973D_TCA_SETTLE_MS > 0
+        HAL_Delay(AK09973D_TCA_SETTLE_MS);
+#endif
 
         ak09973d_magdata_t data;
         if (AK09973D_ReadMagData(&g_valid[i].dev, &data) != HAL_OK) {
-            written = snprintf(out + off, out_size - off, "AKERR,%d,0x%02X,READ,0x%08lX\r\n",
-                               g_valid[i].i2c_bus, g_valid[i].mask, (unsigned long)HAL_I2C_GetError(hi2c));
-            if (written <= 0 || (size_t)written >= out_size - off) break;
-            off += (size_t)written;
+            if (!csv_append_akerr_line(out, out_size, &off,
+                                       g_valid[i].i2c_bus, g_valid[i].mask,
+                                       "READ", HAL_I2C_GetError(hi2c))) {
+                break;
+            }
             continue;
         }
 
-        written = snprintf(out + off, out_size - off, "AK,%d,0x%02X,%d,%d,%d,%d,%d,%d\r\n",
-                           g_valid[i].i2c_bus,
-                           g_valid[i].mask,
-                           data.hx, data.hy, data.hz,
-                           (int)(data.status & 0x01),
-                           (int)((data.status & AK09973D_ST_ERR) != 0U),
-                           (int)((data.status & AK09973D_ST_DOR) != 0U));
-        if (written <= 0 || (size_t)written >= out_size - off) break;
-        off += (size_t)written;
+        if (!csv_append_ak_line(out, out_size, &off,
+                                g_valid[i].i2c_bus, g_valid[i].mask, &data)) {
+            break;
+        }
+
+#if AK09973D_POST_READ_MS > 0
+        if (g_valid[i].i2c_bus == 1) {
+            HAL_Delay(AK09973D_POST_READ_MS);
+        }
+#endif
     }
 
+#if AK09973D_DESELECT_AFTER_READ
     TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
     TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, 0);
+#endif
     return (int)off;
 }
 

@@ -32,6 +32,7 @@ APP_SRC  = Core/Src/main.c \
             Core/Src/icm42670.c \
             Core/Src/ak09973d.c \
             Core/Src/tmag3001.c \
+            Core/Src/csv_writer.c \
             Core/Src/sensor_ak09973d.c \
             Core/Src/sensor_tmag3001.c
 

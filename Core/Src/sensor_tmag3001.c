@@ -22,8 +22,8 @@ static TMAG3001_Instance_t g_tmag_list[TMAG3001_TOTAL_NUM];
 
 static const uint8_t g_tmag_addrs[TMAG3001_PER_CHANNEL] = {
     TMAG3001_ADDR_A2_GND,
-    TMAG3001_ADDR_A2_SDA,
-    TMAG3001_ADDR_A2_3V3
+    TMAG3001_ADDR_A2_3V3,
+    TMAG3001_ADDR_A2_SDA
 };
 
 static void tmag_hardware_reset(void);

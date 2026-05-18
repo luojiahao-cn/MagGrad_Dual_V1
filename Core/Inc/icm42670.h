@@ -1,6 +1,7 @@
 #pragma once
 #include "stm32h7xx_hal.h"
 #include <stdint.h>
+#include <stddef.h>
 
 typedef struct
 {
@@ -18,5 +19,6 @@ typedef struct
 
 HAL_StatusTypeDef ICM42670_Init(icm42670_t *icm);
 HAL_StatusTypeDef ICM42670_ReadRaw(icm42670_t *icm, icm42670_raw_t *out);
+int ICM42670_ReadToCSV(icm42670_t *icm, char *out, size_t out_size);
 
 void ICM42670_ReadAndPrint(icm42670_t *icm);

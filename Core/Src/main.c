@@ -72,7 +72,6 @@ static void MPU_Config(void);
 /* USER CODE BEGIN 0 */
 
 // USB CDC发送字符串
-static uint8_t cdc_tx_buf[63];
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 static int USB_CDC_IsBusy(void)
@@ -87,14 +86,16 @@ static void USB_Send_Buffer(const uint8_t *buf, uint16_t len)
 
     while (sent < len) {
         uint16_t chunk = len - sent;
-        if (chunk > sizeof(cdc_tx_buf)) {
-            chunk = sizeof(cdc_tx_buf);
-        }
-
-        memcpy(cdc_tx_buf, buf + sent, chunk);
 
         uint32_t start = HAL_GetTick();
-        while (CDC_Transmit_FS(cdc_tx_buf, chunk) == USBD_BUSY) {
+        while (USB_CDC_IsBusy()) {
+            if ((HAL_GetTick() - start) > 100U) {
+                return;
+            }
+        }
+
+        start = HAL_GetTick();
+        while (CDC_Transmit_FS((uint8_t *)(buf + sent), chunk) == USBD_BUSY) {
             if ((HAL_GetTick() - start) > 100U) {
                 return;
             }
@@ -232,50 +233,25 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    // Read ICM42670 IMU data
-    // if (ICM42670_ReadRaw(&icm, &imu) == HAL_OK) {
-    //     printf("ICM,%d,%d,%d,%d,%d,%d,%d,%d\r\n",
-    //            imu.ax, imu.ay, imu.az,
-    //            imu.gx, imu.gy, imu.gz,
-    //            imu.temp);
-    // }
+	    char frame[1536];
+	    int n = 0;
+	    // int n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
+	    // if (n > 0) {
+	    //     frame[n] = '\0';
+	    //     USB_Send_String(frame);
+	    // }
 
-    static uint32_t cycle = 0;
-    static uint32_t last_rate_tick = 0;
-    static uint32_t last_rate_cycle = 0;
-    char frame[3072];
-    size_t off = 0;
-    int n = Sensor_AK09973D_ReadToCSV(frame + off, sizeof(frame) - off);
+    n = Sensor_AK09973D_ReadToCSV(frame, sizeof(frame));
     if (n > 0) {
-        off += (size_t)n;
-    }
-    n = Sensor_TMAG3001_ReadAllToCSV(frame + off, sizeof(frame) - off);
-    if (n > 0) {
-        off += (size_t)n;
-    }
-
-    cycle++;
-    uint32_t now = HAL_GetTick();
-    if ((now - last_rate_tick) >= 1000U) {
-        if (last_rate_tick != 0U) {
-            uint32_t dt = now - last_rate_tick;
-            uint32_t dc = cycle - last_rate_cycle;
-            if (off < sizeof(frame)) {
-                int written = snprintf(frame + off, sizeof(frame) - off,
-                                       "RATE,%lu\r\n", (unsigned long)((dc * 1000U) / dt));
-                if (written > 0 && (size_t)written < sizeof(frame) - off) {
-                    off += (size_t)written;
-                }
-            }
-        }
-        last_rate_tick = now;
-        last_rate_cycle = cycle;
-    }
-
-    if (off > 0U) {
-        frame[off] = '\0';
+        frame[n] = '\0';
         USB_Send_String(frame);
     }
+
+    // n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
+    // if (n > 0) {
+    //     frame[n] = '\0';
+    //     USB_Send_String(frame);
+    // }
 
     // LED 状态指示
     static uint32_t last_toggle = 0;

@@ -71,17 +71,30 @@ HAL_StatusTypeDef ICM42670_ReadRaw(icm42670_t *icm, icm42670_raw_t *out)
     return HAL_OK;
 }
 
+int ICM42670_ReadToCSV(icm42670_t *icm, char *out, size_t out_size)
+{
+    icm42670_raw_t d;
+
+    if (ICM42670_ReadRaw(icm, &d) != HAL_OK) {
+        return snprintf(out, out_size, "ICMERR,READ\r\n");
+    }
+
+    return snprintf(out, out_size, "ICM,%d,%d,%d,%d,%d,%d,%d\r\n",
+                    d.ax, d.ay, d.az,
+                    d.gx, d.gy, d.gz,
+                    d.temp);
+}
+
 void ICM42670_ReadAndPrint(icm42670_t *icm)
 {
     icm42670_raw_t d;
     if (ICM42670_ReadRaw(icm, &d) == HAL_OK)
     {
-        // 与QMC打印风格一致的简洁一行
-        printf("3,%d,%d,%d,%d,%d,%d,%d\r\n",
+        printf("ICM,%d,%d,%d,%d,%d,%d,%d\r\n",
                d.ax, d.ay, d.az, d.gx, d.gy, d.gz, d.temp);
     }
     else
     {
-        printf("ICM42670 read error\r\n");
+        printf("ICMERR,READ\r\n");
     }
 }
