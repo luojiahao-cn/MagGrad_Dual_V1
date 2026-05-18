@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "usbd_cdc_if.h"
+#include "usbd_cdc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -71,16 +72,71 @@ static void MPU_Config(void);
 /* USER CODE BEGIN 0 */
 
 // USB CDC发送字符串
-void USB_Send_String(char *str)
+static uint8_t cdc_tx_buf[63];
+extern USBD_HandleTypeDef hUsbDeviceFS;
+
+static int USB_CDC_IsBusy(void)
 {
-    CDC_Transmit_FS((uint8_t *)str, strlen(str));
+    USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassData;
+    return (hcdc != NULL && hcdc->TxState != 0U);
 }
 
-// printf 重定向到 USB CDC
+static void USB_Send_Buffer(const uint8_t *buf, uint16_t len)
+{
+    uint16_t sent = 0;
+
+    while (sent < len) {
+        uint16_t chunk = len - sent;
+        if (chunk > sizeof(cdc_tx_buf)) {
+            chunk = sizeof(cdc_tx_buf);
+        }
+
+        memcpy(cdc_tx_buf, buf + sent, chunk);
+
+        uint32_t start = HAL_GetTick();
+        while (CDC_Transmit_FS(cdc_tx_buf, chunk) == USBD_BUSY) {
+            if ((HAL_GetTick() - start) > 100U) {
+                return;
+            }
+        }
+
+        start = HAL_GetTick();
+        while (USB_CDC_IsBusy()) {
+            if ((HAL_GetTick() - start) > 100U) {
+                return;
+            }
+        }
+
+        sent += chunk;
+    }
+}
+
+void USB_Send_String(char *str)
+{
+    size_t len = strlen(str);
+    if (len > UINT16_MAX) {
+        len = UINT16_MAX;
+    }
+    USB_Send_Buffer((const uint8_t *)str, (uint16_t)len);
+}
+
+static void USB_Send_PrintBuffer(char *ptr, int len)
+{
+    if (len <= 0) {
+        return;
+    }
+    while (len > 0) {
+        uint16_t chunk = (len > UINT16_MAX) ? UINT16_MAX : (uint16_t)len;
+        USB_Send_Buffer((const uint8_t *)ptr, chunk);
+        ptr += chunk;
+        len -= chunk;
+    }
+}
+
 int _write(int file, char *ptr, int len)
 {
     (void)file;
-    CDC_Transmit_FS((uint8_t *)ptr, len);
+    USB_Send_PrintBuffer(ptr, len);
     HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, 100);
     return len;
 }
@@ -136,7 +192,7 @@ int main(void)
   HAL_Delay(100);
   HAL_Delay(2000);  // 等待 USB CDC 准备好
 
-  printf("=== MAG INIT/READ TEST START ===\r\n");
+  printf("=== MAG READ START ===\r\n");
 
   if (ICM42670_Init(&icm) != HAL_OK)
   {
@@ -146,6 +202,24 @@ int main(void)
   else
   {
       printf("ICM init OK (WHO=0x67)\r\n");
+  }
+
+  int ak_count = 0;
+  int tmag_count = 0;
+  for (int attempt = 1; attempt <= 5; attempt++) {
+      printf("MAG init attempt %d\r\n", attempt);
+      Sensor_AK09973D_Init_All();
+      Sensor_TMAG3001_Init_All();
+
+      ak_count = Sensor_AK09973D_GetCount();
+      tmag_count = Sensor_TMAG3001_GetCount();
+      printf("MAG init count AK=%d/%d TMAG=%d/%d\r\n",
+             ak_count, AK09973D_COUNT, tmag_count, TMAG3001_TOTAL_NUM);
+
+      if (ak_count == AK09973D_COUNT && tmag_count == TMAG3001_TOTAL_NUM) {
+          break;
+      }
+      HAL_Delay(500);
   }
 
   /* USER CODE END 2 */
@@ -167,15 +241,41 @@ int main(void)
     // }
 
     static uint32_t cycle = 0;
-    printf("=== MAG TEST CYCLE %lu ===\r\n", (unsigned long)cycle++);
-    Sensor_AK09973D_Init_All();
-    Sensor_TMAG3001_Init_All();
-    Sensor_AK09973D_ReadAll();
-    Sensor_TMAG3001_ReadAll();
+    static uint32_t last_rate_tick = 0;
+    static uint32_t last_rate_cycle = 0;
+    char frame[3072];
+    size_t off = 0;
+    int n = Sensor_AK09973D_ReadToCSV(frame + off, sizeof(frame) - off);
+    if (n > 0) {
+        off += (size_t)n;
+    }
+    n = Sensor_TMAG3001_ReadAllToCSV(frame + off, sizeof(frame) - off);
+    if (n > 0) {
+        off += (size_t)n;
+    }
 
-    HAL_Delay(1000);
+    cycle++;
+    uint32_t now = HAL_GetTick();
+    if ((now - last_rate_tick) >= 1000U) {
+        if (last_rate_tick != 0U) {
+            uint32_t dt = now - last_rate_tick;
+            uint32_t dc = cycle - last_rate_cycle;
+            if (off < sizeof(frame)) {
+                int written = snprintf(frame + off, sizeof(frame) - off,
+                                       "RATE,%lu\r\n", (unsigned long)((dc * 1000U) / dt));
+                if (written > 0 && (size_t)written < sizeof(frame) - off) {
+                    off += (size_t)written;
+                }
+            }
+        }
+        last_rate_tick = now;
+        last_rate_cycle = cycle;
+    }
 
-
+    if (off > 0U) {
+        frame[off] = '\0';
+        USB_Send_String(frame);
+    }
 
     // LED 状态指示
     static uint32_t last_toggle = 0;

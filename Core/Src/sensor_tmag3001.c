@@ -37,10 +37,10 @@ static void tmag_hardware_reset(void)
     HAL_I2C_DeInit(&hi2c3);
 
     HAL_GPIO_WritePin(I2C3_RESET_GPIO_Port, I2C3_RESET_Pin, GPIO_PIN_RESET);
-    HAL_Delay(100);
+    HAL_Delay(300);
 
     HAL_GPIO_WritePin(I2C3_RESET_GPIO_Port, I2C3_RESET_Pin, GPIO_PIN_SET);
-    HAL_Delay(100);
+    HAL_Delay(300);
 
     extern void MX_I2C3_Init(void);
     MX_I2C3_Init();
@@ -107,6 +107,8 @@ void Sensor_TMAG3001_Init_All(void)
 
         printf("TMAG CH%d: %d/%d OK\r\n", ch, ch_ok, TMAG3001_PER_CHANNEL);
         fflush(stdout);
+        TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+        HAL_Delay(10);
     }
 
     // Count first-pass results
@@ -177,7 +179,17 @@ int Sensor_TMAG3001_ReadToCSV(uint8_t tca_ch_mask, char *out_line, size_t out_si
 
 void Sensor_TMAG3001_ReadAll(void)
 {
+    char frame[1024];
+    int n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
+    if (n > 0) {
+        USB_Send_String(frame);
+    }
+}
+
+int Sensor_TMAG3001_ReadAllToCSV(char *out, size_t out_size)
+{
     char line[512];
+    size_t off = 0;
 
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
         if (!g_tmag_list[i].inited) continue;
@@ -194,7 +206,23 @@ void Sensor_TMAG3001_ReadAll(void)
 
         int n = Sensor_TMAG3001_ReadToCSV(mask, line, sizeof(line));
         if (n > 0) {
-            USB_Send_String(line);
+            if ((size_t)n >= out_size - off) break;
+            memcpy(out + off, line, (size_t)n);
+            off += (size_t)n;
+            out[off] = '\0';
         }
     }
+
+    return (int)off;
+}
+
+int Sensor_TMAG3001_GetCount(void)
+{
+    int count = 0;
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        if (g_tmag_list[i].inited) {
+            count++;
+        }
+    }
+    return count;
 }

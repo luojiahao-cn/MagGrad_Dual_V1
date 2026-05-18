@@ -1,6 +1,7 @@
 #pragma once
 #include "tmag3001.h"
 #include "i2c.h"
+#include <stddef.h>
 
 // TMAG3001 configuration
 // I2C3: 4 channels x 3 sensors = 12 total
@@ -12,9 +13,11 @@
 
 // Base addresses: A2=GND, A2=SDA, A2=3V3
 #define TMAG3001_ADDR_A2_GND   0x34
-#define TMAG3001_ADDR_A2_SDA    0x36
+#define TMAG3001_ADDR_A2_SDA   0x36
 #define TMAG3001_ADDR_A2_3V3   0x35
 
 void Sensor_TMAG3001_Init_All(void);
 int Sensor_TMAG3001_ReadToCSV(uint8_t tca_ch_mask, char *out_line, size_t out_size);
+int Sensor_TMAG3001_ReadAllToCSV(char *out, size_t out_size);
 void Sensor_TMAG3001_ReadAll(void);
+int Sensor_TMAG3001_GetCount(void);

@@ -86,9 +86,20 @@ Device_Config_2 = 0x02   continuous conversion mode
 ```
 
 After entering continuous mode, the driver polls `Conv_Status.Result_Status`
-before accepting the sensor as initialized. The test firmware currently repeats
-AK and TMAG initialization followed by reads so the serial log can show whether
-the bus remains healthy over repeated init/read cycles.
+before accepting the sensor as initialized. The runtime firmware initializes AK
+and TMAG once, then loops on reads.
+
+Do not switch TMAG3001 `Device_Config_1.I2C_RD[1:0]` to the direct result-read
+mode without a matching recovery path. In testing, direct-read mode caused later
+manufacturer-ID register reads to return measurement-frame bytes instead of
+`0x5449` until the firmware forced `Device_Config_1 = 0x00` at the start of
+initialization. Keep that force-write in place so a previous bad configuration
+does not survive a reset line pulse.
+
+For stable full-frame serial output, the TMAG read path keeps a 10 ms mux-settle
+delay after each TCA channel selection and a 5 ms delay after each successful
+sensor read. Removing the per-sensor 5 ms delay raised the AK-only loop rate but
+caused TMAG CSV rows to disappear in the current USB CDC/read timing setup.
 
 AK09973D I2C1 pins are:
 

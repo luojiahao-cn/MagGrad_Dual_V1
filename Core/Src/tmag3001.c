@@ -108,6 +108,11 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
     dev->hi2c = hi2c;
     dev->addr7 = addr7;
 
+    write_reg(dev, TMAG3001_REG_DEV_CFG1, TMAG3001_DEV_CFG1_DEFAULT);
+    HAL_Delay(2);
+    write_reg(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_DEV_CFG2_STANDBY);
+    HAL_Delay(2);
+
     uint16_t mfg_id;
     if (read_mfg_id_retry(dev, &mfg_id) != HAL_OK || mfg_id != 0x5449) {
         return HAL_ERROR;

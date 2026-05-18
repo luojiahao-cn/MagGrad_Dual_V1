@@ -158,79 +158,6 @@ static HAL_StatusTypeDef ak_select_channel(uint8_t bus, uint8_t mask)
     return status;
 }
 
-// Test TCA on each channel - call from main for debugging
-void TCA_Test(void)
-{
-    printf("[TCA] Test I2C1...\r\n");
-    for (int ch = 1; ch <= 6; ch++) {
-        uint8_t mask = 1 << (ch - 1);
-        HAL_StatusTypeDef tca = TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, mask);
-        printf("  CH%d: %s\r\n", ch, tca == HAL_OK ? "OK" : "FAIL");
-    }
-
-    printf("[TCA] Test I2C2...\r\n");
-    for (int ch = 1; ch <= 6; ch++) {
-        uint8_t mask = 1 << (ch - 1);
-        HAL_StatusTypeDef tca = TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, mask);
-        printf("  CH%d: %s\r\n", ch, tca == HAL_OK ? "OK" : "FAIL");
-    }
-}
-
-void Sensor_AK09973D_Debug_I2C1(void)
-{
-    const uint8_t masks[] = {0x02, 0x04, 0x08, 0x10, 0x20, 0x40};
-
-    printf("=== I2C1 ISOLATION DEBUG START ===\r\n");
-    for (size_t i = 0; i < sizeof(masks); i++) {
-        uint8_t mask = masks[i];
-        uint8_t company = 0;
-        uint8_t device = 0;
-
-        ak_bus_reset(1);
-        HAL_Delay(20);
-
-        printf("[I2C1DBG] mask=0x%02X before ping: ", mask);
-        print_i2c_diag("", &hi2c1);
-
-        HAL_StatusTypeDef ping = TCA9548_Ping(&hi2c1, AK09973D_TCA_ADDR_7B);
-        printf("[I2C1DBG] mask=0x%02X tca-ping=%s ", mask, hal_status_name(ping));
-        print_i2c_diag("", &hi2c1);
-
-        HAL_StatusTypeDef deselect = TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
-        printf("[I2C1DBG] mask=0x%02X deselect=%s ", mask, hal_status_name(deselect));
-        print_i2c_diag("", &hi2c1);
-
-        HAL_StatusTypeDef select = TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, mask);
-        printf("[I2C1DBG] mask=0x%02X select=%s ", mask, hal_status_name(select));
-        print_i2c_diag("", &hi2c1);
-
-        if (select == HAL_OK) {
-            HAL_Delay(5);
-            if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET) {
-                printf("[I2C1DBG] mask=0x%02X SDA low after select, bus-clear begin\r\n", mask);
-                i2c1_gpio_bus_clear();
-                print_i2c_diag("[I2C1DBG] after bus-clear", &hi2c1);
-                select = TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, mask);
-                printf("[I2C1DBG] mask=0x%02X reselect=%s ", mask, hal_status_name(select));
-                print_i2c_diag("", &hi2c1);
-                HAL_Delay(5);
-            }
-            HAL_StatusTypeDef probe = AK09973D_Probe(&hi2c1, AK09973D_ADDR_1, &company, &device);
-            printf("[I2C1DBG] mask=0x%02X wia=%s cid=0x%02X did=0x%02X ",
-                   mask,
-                   hal_status_name(probe),
-                   company,
-                   device);
-            print_i2c_diag("", &hi2c1);
-
-            HAL_StatusTypeDef off = TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
-            printf("[I2C1DBG] mask=0x%02X off-after-wia=%s ", mask, hal_status_name(off));
-            print_i2c_diag("", &hi2c1);
-        }
-    }
-    printf("=== I2C1 ISOLATION DEBUG END ===\r\n");
-}
-
 void Sensor_AK09973D_Init_All(void)
 {
     memset(g_valid, 0, sizeof(g_valid));
@@ -245,56 +172,43 @@ void Sensor_AK09973D_Init_All(void)
     int dev_fail_bus1 = 0, dev_fail_bus2 = 0;
     int init_bus1 = 0, init_bus2 = 0;
 
-    printf("[AK] Init start cntl2=0x%02X (mode=0x%02X, low-noise, high-sens)\r\n",
-           AK09973D_ACTIVE_CNTL2,
-           AK09973D_ACTIVE_CNTL2 & AK09973D_CNTL2_MODE_MASK);
     for (int i = 0; i < AK09973D_COUNT; i++) {
         I2C_HandleTypeDef *hi2c = get_i2c(g_config[i].i2c_bus);
         uint8_t mask = g_config[i].mask;
         uint8_t addr = g_config[i].addr;
         uint8_t company = 0;
         uint8_t device = 0;
-        ak09973d_config_t cfg;
-
         if (g_config[i].i2c_bus == 1) init_bus1++;
         else init_bus2++;
 
-        printf("[AK] I2C%d CH0x%02X addr=0x%02X: ", g_config[i].i2c_bus, mask, addr);
-
         HAL_StatusTypeDef tca = ak_select_channel(g_config[i].i2c_bus, mask);
         if (tca != HAL_OK) {
-            printf("TCA %s err=0x%08lX\r\n", hal_status_name(tca), (unsigned long)HAL_I2C_GetError(hi2c));
+            printf("AKINITERR,%d,0x%02X,TCA,%s,0x%08lX\r\n",
+                   g_config[i].i2c_bus, mask, hal_status_name(tca), (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) tca_fail_bus1++;
             else tca_fail_bus2++;
             continue;
         }
-        printf("TCA ok -> ");
 
         HAL_StatusTypeDef probe = AK09973D_Probe(hi2c, addr, &company, &device);
         if (probe != HAL_OK) {
-            printf("WIA FAIL cid=0x%02X did=0x%02X err=0x%08lX\r\n",
-                   company, device, (unsigned long)HAL_I2C_GetError(hi2c));
+            printf("AKINITERR,%d,0x%02X,WIA,%02X%02X,0x%08lX\r\n",
+                   g_config[i].i2c_bus, mask, company, device, (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) dev_fail_bus1++;
             else dev_fail_bus2++;
             continue;
         }
-        printf("WIA=0x%02X%02X -> ", company, device);
 
         ak09973d_t dev = {0};
         HAL_StatusTypeDef ak = AK09973D_InitWithConfig(&dev, hi2c, addr, AK09973D_ACTIVE_CNTL2);
         if (ak != HAL_OK) {
-            printf("INIT %s err=0x%08lX\r\n", hal_status_name(ak), (unsigned long)HAL_I2C_GetError(hi2c));
+            printf("AKINITERR,%d,0x%02X,INIT,%s,0x%08lX\r\n",
+                   g_config[i].i2c_bus, mask, hal_status_name(ak), (unsigned long)HAL_I2C_GetError(hi2c));
             if (g_config[i].i2c_bus == 1) dev_fail_bus1++;
             else dev_fail_bus2++;
             continue;
         }
-        if (AK09973D_ReadConfig(&dev, &cfg) == HAL_OK) {
-            printf("OK cntl1=0x%02X%02X cntl2=0x%02X\r\n", cfg.cntl1_h, cfg.cntl1_l, cfg.cntl2);
-        } else {
-            printf("OK cfg-read-fail\r\n");
-        }
 
-        // 保存有效的传感器
         g_valid[count].i2c_bus = g_config[i].i2c_bus;
         g_valid[count].mask = mask;
         g_valid[count].dev = dev;
@@ -308,7 +222,6 @@ void Sensor_AK09973D_Init_All(void)
            init_bus1, tca_fail_bus1, dev_fail_bus1,
            init_bus2, tca_fail_bus2, dev_fail_bus2);
 
-    // LED反馈：成功数闪烁
     for (int i = 0; i < count; i++) {
         HAL_GPIO_TogglePin(LEDG_GPIO_Port, LEDG_Pin);
         HAL_Delay(30);
@@ -324,33 +237,64 @@ void Sensor_AK09973D_Init_All(void)
     }
 }
 
-void Sensor_AK09973D_ReadAll(void)
+int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size)
 {
+    size_t off = 0;
+
     for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
         I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
+        int written = 0;
 
         if (ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask) != HAL_OK) {
-            printf("AKERR,%d,0x%02X,TCA,0x%08lX\r\n",
-                   g_valid[i].i2c_bus, g_valid[i].mask, (unsigned long)HAL_I2C_GetError(hi2c));
+            written = snprintf(out + off, out_size - off, "AKERR,%d,0x%02X,TCA,0x%08lX\r\n",
+                               g_valid[i].i2c_bus, g_valid[i].mask, (unsigned long)HAL_I2C_GetError(hi2c));
+            if (written <= 0 || (size_t)written >= out_size - off) break;
+            off += (size_t)written;
             continue;
         }
+        HAL_Delay(1);
 
         ak09973d_magdata_t data;
         if (AK09973D_ReadMagData(&g_valid[i].dev, &data) != HAL_OK) {
-            printf("AKERR,%d,0x%02X,READ,0x%08lX\r\n",
-                   g_valid[i].i2c_bus, g_valid[i].mask, (unsigned long)HAL_I2C_GetError(hi2c));
+            written = snprintf(out + off, out_size - off, "AKERR,%d,0x%02X,READ,0x%08lX\r\n",
+                               g_valid[i].i2c_bus, g_valid[i].mask, (unsigned long)HAL_I2C_GetError(hi2c));
+            if (written <= 0 || (size_t)written >= out_size - off) break;
+            off += (size_t)written;
             continue;
         }
 
-        printf("AK,%d,0x%02X,%d,%d,%d,%d,%d,%d\r\n",
-               g_valid[i].i2c_bus,
-               g_valid[i].mask,
-               data.hx, data.hy, data.hz,
-               (int)(data.status & 0x01),
-               (int)((data.status & AK09973D_ST_ERR) != 0U),
-               (int)((data.status & AK09973D_ST_DOR) != 0U));
+        written = snprintf(out + off, out_size - off, "AK,%d,0x%02X,%d,%d,%d,%d,%d,%d\r\n",
+                           g_valid[i].i2c_bus,
+                           g_valid[i].mask,
+                           data.hx, data.hy, data.hz,
+                           (int)(data.status & 0x01),
+                           (int)((data.status & AK09973D_ST_ERR) != 0U),
+                           (int)((data.status & AK09973D_ST_DOR) != 0U));
+        if (written <= 0 || (size_t)written >= out_size - off) break;
+        off += (size_t)written;
     }
 
     TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
     TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, 0);
+    return (int)off;
+}
+
+void Sensor_AK09973D_ReadAll(void)
+{
+    char frame[1024];
+    int n = Sensor_AK09973D_ReadToCSV(frame, sizeof(frame));
+    if (n > 0) {
+        USB_Send_String(frame);
+    }
+}
+
+int Sensor_AK09973D_GetCount(void)
+{
+    int count = 0;
+    for (int i = 0; i < AK09973D_COUNT; i++) {
+        if (g_valid[i].dev.hi2c != NULL) {
+            count++;
+        }
+    }
+    return count;
 }
