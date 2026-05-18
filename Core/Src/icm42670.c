@@ -1,4 +1,5 @@
 #include "icm42670.h"
+#include "csv_writer.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -74,15 +75,34 @@ HAL_StatusTypeDef ICM42670_ReadRaw(icm42670_t *icm, icm42670_raw_t *out)
 int ICM42670_ReadToCSV(icm42670_t *icm, char *out, size_t out_size)
 {
     icm42670_raw_t d;
+    size_t off = 0;
 
     if (ICM42670_ReadRaw(icm, &d) != HAL_OK) {
-        return snprintf(out, out_size, "ICMERR,READ\r\n");
+        if (!CSV_AppendString(out, out_size, &off, "ICMERR,READ\r\n")) {
+            return 0;
+        }
+        return (int)off;
     }
 
-    return snprintf(out, out_size, "ICM,%d,%d,%d,%d,%d,%d,%d\r\n",
-                    d.ax, d.ay, d.az,
-                    d.gx, d.gy, d.gz,
-                    d.temp);
+    if (!CSV_AppendString(out, out_size, &off, "ICM,") ||
+        !CSV_AppendI32(out, out_size, &off, d.ax) ||
+        !CSV_AppendChar(out, out_size, &off, ',') ||
+        !CSV_AppendI32(out, out_size, &off, d.ay) ||
+        !CSV_AppendChar(out, out_size, &off, ',') ||
+        !CSV_AppendI32(out, out_size, &off, d.az) ||
+        !CSV_AppendChar(out, out_size, &off, ',') ||
+        !CSV_AppendI32(out, out_size, &off, d.gx) ||
+        !CSV_AppendChar(out, out_size, &off, ',') ||
+        !CSV_AppendI32(out, out_size, &off, d.gy) ||
+        !CSV_AppendChar(out, out_size, &off, ',') ||
+        !CSV_AppendI32(out, out_size, &off, d.gz) ||
+        !CSV_AppendChar(out, out_size, &off, ',') ||
+        !CSV_AppendI32(out, out_size, &off, d.temp) ||
+        !CSV_AppendCRLF(out, out_size, &off)) {
+        return 0;
+    }
+
+    return (int)off;
 }
 
 void ICM42670_ReadAndPrint(icm42670_t *icm)

@@ -4,6 +4,7 @@
 
 #include "main.h"
 #include "i2c.h"
+#include "csv_writer.h"
 #include "sensor_tmag3001.h"
 #include "tca9548.h"
 
@@ -27,6 +28,77 @@ static const uint8_t g_tmag_addrs[TMAG3001_PER_CHANNEL] = {
 };
 
 static void tmag_hardware_reset(void);
+
+static int tmag_append_line(char *out, size_t out_size, size_t *off,
+                            uint8_t tca_ch_mask, uint8_t addr7,
+                            const tmag3001_data_t *data)
+{
+    return CSV_AppendString(out, out_size, off, "TMAG,") &&
+           CSV_AppendU32(out, out_size, off, tca_ch_mask) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendHex8(out, out_size, off, addr7) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendI32(out, out_size, off, data->x) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendI32(out, out_size, off, data->y) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendI32(out, out_size, off, data->z) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendU32(out, out_size, off, (data->status & 0x01U) ? 1U : 0U) &&
+           CSV_AppendChar(out, out_size, off, ',') &&
+           CSV_AppendU32(out, out_size, off, (data->status & 0x02U) ? 1U : 0U) &&
+           CSV_AppendCRLF(out, out_size, off);
+}
+
+static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_size, size_t *off)
+{
+    int sensor_count = 0;
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        TMAG3001_Instance_t *inst = &g_tmag_list[i];
+        if (inst->inited && inst->tca_ch_mask == tca_ch_mask) {
+            sensor_count++;
+        }
+    }
+
+    if (sensor_count == 0) return 1;
+
+    if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
+        return 0;
+    }
+#if TMAG3001_READ_TCA_SETTLE_MS > 0
+    HAL_Delay(TMAG3001_READ_TCA_SETTLE_MS);
+#endif
+
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        TMAG3001_Instance_t *inst = &g_tmag_list[i];
+        if (!inst->inited) continue;
+        if (inst->tca_ch_mask != tca_ch_mask) continue;
+
+        tmag3001_data_t data;
+        int read_ok = 0;
+        for (int retry = 0; retry < 3; retry++) {
+            if (TMAG3001_ReadData(&inst->dev, &data) == HAL_OK) {
+                read_ok = 1;
+                break;
+            }
+#if TMAG3001_READ_RETRY_DELAY_MS > 0
+            HAL_Delay(TMAG3001_READ_RETRY_DELAY_MS);
+#endif
+        }
+        if (!read_ok) continue;
+
+        if (!tmag_append_line(out, out_size, off, tca_ch_mask, inst->addr7, &data)) {
+            return 0;
+        }
+
+#if TMAG3001_READ_POST_DELAY_MS > 0
+        HAL_Delay(TMAG3001_READ_POST_DELAY_MS);
+#endif
+    }
+
+    TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+    return 1;
+}
 
 // TMAG硬件复位：通过I2C3_RESET线复位TCA Mux和所有TMAG传感器
 static void tmag_hardware_reset(void)
@@ -81,15 +153,20 @@ void Sensor_TMAG3001_Init_All(void)
 
         if ((TMAG3001_ACTIVE_TCA_MASK & mask) == 0U) continue;
 
+        int ch_start_idx = idx;
+        int ch_ok = 0;
+        for (int ch_attempt = 0; ch_attempt < 2 && ch_ok == 0; ch_attempt++) {
+            idx = ch_start_idx;
+
         // Select TCA channel directly (no prior deselect needed)
         if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask) != HAL_OK) {
             printf("TMAG CH%d: TCA select FAIL\r\n", ch);
             fflush(stdout);
+            tmag_hardware_reset();
             continue;
         }
         HAL_Delay(20);
 
-        int ch_ok = 0;
         for (uint8_t sub = 0; sub < TMAG3001_PER_CHANNEL && idx < TMAG3001_TOTAL_NUM; sub++) {
             TMAG3001_Instance_t *inst = &g_tmag_list[idx];
             uint8_t addr = g_tmag_addrs[sub];
@@ -100,9 +177,21 @@ void Sensor_TMAG3001_Init_All(void)
                 inst->i2c = &hi2c3;
                 inst->inited = 1;
                 ch_ok++;
+            } else {
+                TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+                HAL_Delay(5);
+                TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, mask);
+                HAL_Delay(20);
             }
             idx++;
             HAL_Delay(20);
+        }
+
+        if (ch_ok == 0 && ch_attempt == 0) {
+            TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+            HAL_Delay(10);
+            tmag_hardware_reset();
+        }
         }
 
         printf("TMAG CH%d: %d/%d OK\r\n", ch, ch_ok, TMAG3001_PER_CHANNEL);
@@ -126,54 +215,8 @@ void Sensor_TMAG3001_Init_All(void)
 
 int Sensor_TMAG3001_ReadToCSV(uint8_t tca_ch_mask, char *out_line, size_t out_size)
 {
-    if (out_size < 512) return 0;
-
-    int sensor_count = 0;
-    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
-        TMAG3001_Instance_t *inst = &g_tmag_list[i];
-        if (inst->inited && inst->tca_ch_mask == tca_ch_mask) {
-            sensor_count++;
-        }
-    }
-
-    if (sensor_count == 0) return 0;
-
-    if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask) != HAL_OK)
-        return 0;
-    HAL_Delay(10);
-
     size_t off = 0;
-
-    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
-        TMAG3001_Instance_t *inst = &g_tmag_list[i];
-        if (!inst->inited) continue;
-        if (inst->tca_ch_mask != tca_ch_mask) continue;
-
-        tmag3001_data_t data;
-        int read_ok = 0;
-        for (int retry = 0; retry < 3; retry++) {
-            if (TMAG3001_ReadData(&inst->dev, &data) == HAL_OK) {
-                read_ok = 1;
-                break;
-            }
-            HAL_Delay(5);
-        }
-        if (!read_ok) continue;
-
-        int written = snprintf(out_line + off, out_size - off, "TMAG,%d,0x%02X,%d,%d,%d,%d,%d\r\n",
-                              tca_ch_mask,
-                              inst->addr7,
-                              data.x, data.y, data.z,
-                              (int)(data.status & 0x01),
-                              (int)(data.status & 0x02));
-        if (written <= 0) break;
-        off += (size_t)written;
-        if (off >= out_size) break;
-
-        HAL_Delay(5);
-    }
-
-    TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+    (void)tmag_read_channel_to_csv(tca_ch_mask, out_line, out_size, &off);
     return (int)off;
 }
 
@@ -188,7 +231,6 @@ void Sensor_TMAG3001_ReadAll(void)
 
 int Sensor_TMAG3001_ReadAllToCSV(char *out, size_t out_size)
 {
-    char line[512];
     size_t off = 0;
 
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
@@ -204,12 +246,8 @@ int Sensor_TMAG3001_ReadAllToCSV(char *out, size_t out_size)
         }
         if (already_read) continue;
 
-        int n = Sensor_TMAG3001_ReadToCSV(mask, line, sizeof(line));
-        if (n > 0) {
-            if ((size_t)n >= out_size - off) break;
-            memcpy(out + off, line, (size_t)n);
-            off += (size_t)n;
-            out[off] = '\0';
+        if (!tmag_read_channel_to_csv(mask, out, out_size, &off)) {
+            break;
         }
     }
 

@@ -71,6 +71,10 @@ static void MPU_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+#define SENSOR_OUTPUT_ICM   0
+#define SENSOR_OUTPUT_AK    0
+#define SENSOR_OUTPUT_TMAG  1
+
 // USB CDC发送字符串
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
@@ -209,11 +213,23 @@ int main(void)
   int tmag_count = 0;
   for (int attempt = 1; attempt <= 5; attempt++) {
       printf("MAG init attempt %d\r\n", attempt);
+#if SENSOR_OUTPUT_AK
       Sensor_AK09973D_Init_All();
+#endif
+#if SENSOR_OUTPUT_TMAG
       Sensor_TMAG3001_Init_All();
+#endif
 
+#if SENSOR_OUTPUT_AK
       ak_count = Sensor_AK09973D_GetCount();
+#else
+      ak_count = AK09973D_COUNT;
+#endif
+#if SENSOR_OUTPUT_TMAG
       tmag_count = Sensor_TMAG3001_GetCount();
+#else
+      tmag_count = TMAG3001_TOTAL_NUM;
+#endif
       printf("MAG init count AK=%d/%d TMAG=%d/%d\r\n",
              ak_count, AK09973D_COUNT, tmag_count, TMAG3001_TOTAL_NUM);
 
@@ -235,23 +251,29 @@ int main(void)
 
 	    char frame[1536];
 	    int n = 0;
-	    // int n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
-	    // if (n > 0) {
-	    //     frame[n] = '\0';
-	    //     USB_Send_String(frame);
-	    // }
+#if SENSOR_OUTPUT_ICM
+	    n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
+	    if (n > 0) {
+	        frame[n] = '\0';
+	        USB_Send_String(frame);
+	    }
+#endif
 
+#if SENSOR_OUTPUT_AK
     n = Sensor_AK09973D_ReadToCSV(frame, sizeof(frame));
     if (n > 0) {
         frame[n] = '\0';
         USB_Send_String(frame);
     }
+#endif
 
-    // n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
-    // if (n > 0) {
-    //     frame[n] = '\0';
-    //     USB_Send_String(frame);
-    // }
+#if SENSOR_OUTPUT_TMAG
+    n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
+    if (n > 0) {
+        frame[n] = '\0';
+        USB_Send_String(frame);
+    }
+#endif
 
     // LED 状态指示
     static uint32_t last_toggle = 0;
