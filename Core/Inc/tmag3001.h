@@ -33,15 +33,20 @@
 #define TMAG3001_REG_STATUS       TMAG3001_REG_CONV_STATUS
 #define TMAG3001_REG_DEV_STAT     0x1C
 
-// Device_Config_1: CRC_EN=0, MAG_Tempco=0, Conv_AVG=0 (1x/fastest),
+// Device_Config_1: CRC_EN=0, MAG_Tempco=0, Conv_AVG in bits[4:2],
 // I2C_RD=0 (standard register read).
 #define TMAG3001_DEV_CFG1_CRC_DISABLED      0x00
 #define TMAG3001_DEV_CFG1_TEMPCO_NONE       0x00
-#define TMAG3001_DEV_CFG1_CONV_AVG_1X       0x00
+#define TMAG3001_DEV_CFG1_CONV_AVG_1X       0x00  // ~100us/conversion
+#define TMAG3001_DEV_CFG1_CONV_AVG_2X       0x04  // ~200us
+#define TMAG3001_DEV_CFG1_CONV_AVG_4X       0x08  // ~400us
+#define TMAG3001_DEV_CFG1_CONV_AVG_8X       0x0C  // ~800us
+#define TMAG3001_DEV_CFG1_CONV_AVG_16X      0x10  // ~1600us
+#define TMAG3001_DEV_CFG1_CONV_AVG_32X      0x14  // ~3200us
 #define TMAG3001_DEV_CFG1_I2C_RD_STANDARD   0x00
 #define TMAG3001_DEV_CFG1_DEFAULT           (TMAG3001_DEV_CFG1_CRC_DISABLED | \
                                              TMAG3001_DEV_CFG1_TEMPCO_NONE | \
-                                             TMAG3001_DEV_CFG1_CONV_AVG_1X | \
+                                             TMAG3001_DEV_CFG1_CONV_AVG_16X | \
                                              TMAG3001_DEV_CFG1_I2C_RD_STANDARD)
 
 // Device_Config_2: Operating_Mode[1:0] is bits [1:0]; 2h selects continuous
