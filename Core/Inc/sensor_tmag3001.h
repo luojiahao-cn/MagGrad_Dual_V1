@@ -16,9 +16,9 @@
 #define TMAG3001_ADDR_A2_3V3   0x35
 #define TMAG3001_ADDR_A2_SDA   0x36
 
-#define TMAG3001_READ_TCA_SETTLE_MS   1
-#define TMAG3001_READ_RETRY_DELAY_MS  5
-#define TMAG3001_READ_POST_DELAY_MS   1
+#define TMAG3001_READ_TCA_SETTLE_MS   0
+#define TMAG3001_READ_RETRY_DELAY_MS  0
+#define TMAG3001_READ_POST_DELAY_MS   0
 
 void Sensor_TMAG3001_Init_All(void);
 int Sensor_TMAG3001_ReadToCSV(uint8_t tca_ch_mask, char *out_line, size_t out_size);

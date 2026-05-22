@@ -10,7 +10,7 @@
 static inline HAL_StatusTypeDef TCA9548_Select(I2C_HandleTypeDef *hi2c, uint8_t addr7, uint8_t chanMask)
 {
     uint8_t b = chanMask;
-    return HAL_I2C_Master_Transmit(hi2c, addr7 << 1, &b, 1, 100);
+    return HAL_I2C_Master_Transmit(hi2c, addr7 << 1, &b, 1, 10);
 }
 
 // Check if TCA9548A is present on I2C bus

@@ -22,6 +22,7 @@
 
 /* USER CODE BEGIN 0 */
 #include <stdio.h>
+#include "core_cm7.h"  // DWT registers
 /* USER CODE END 0 */
 
 I2C_HandleTypeDef hi2c1;
@@ -239,11 +240,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
 
     __HAL_LINKDMA(i2cHandle,hdmatx,hdma_i2c1_tx);
 
-    /* I2C1 interrupt Init */
-    HAL_NVIC_SetPriority(I2C1_EV_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
-    HAL_NVIC_SetPriority(I2C1_ER_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
+    // I2C1 uses polling mode (HAL_I2C_Mem_Read/Write) - no interrupts needed
   /* USER CODE BEGIN I2C1_MspInit 1 */
 
   /* USER CODE END I2C1_MspInit 1 */
@@ -315,11 +312,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
 
     __HAL_LINKDMA(i2cHandle,hdmatx,hdma_i2c2_tx);
 
-    /* I2C2 interrupt Init */
-    HAL_NVIC_SetPriority(I2C2_EV_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C2_EV_IRQn);
-    HAL_NVIC_SetPriority(I2C2_ER_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C2_ER_IRQn);
+    // I2C2 uses polling mode (HAL_I2C_Mem_Read/Write) - no interrupts needed
   /* USER CODE BEGIN I2C2_MspInit 1 */
 
   /* USER CODE END I2C2_MspInit 1 */
@@ -365,11 +358,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
     // NOTE: I2C3 DMA disabled - use polling mode for TMAG3001 compatibility
     // DMA was causing issues when I2C1/I2C2 are also active
 
-    /* I2C3 interrupt Init */
-    HAL_NVIC_SetPriority(I2C3_EV_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_SetPriority(I2C3_ER_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_ER_IRQn);
+    // I2C3 uses polling mode (HAL_I2C_Mem_Read/Write) - no interrupts needed
   /* USER CODE BEGIN I2C3_MspInit 1 */
 
   /* USER CODE END I2C3_MspInit 1 */
@@ -399,9 +388,7 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
     HAL_DMA_DeInit(i2cHandle->hdmarx);
     HAL_DMA_DeInit(i2cHandle->hdmatx);
 
-    /* I2C1 interrupt Deinit */
-    HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
-    HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
+    // No interrupts to deinit (polling mode)
   /* USER CODE BEGIN I2C1_MspDeInit 1 */
 
   /* USER CODE END I2C1_MspDeInit 1 */
@@ -426,9 +413,7 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
     HAL_DMA_DeInit(i2cHandle->hdmarx);
     HAL_DMA_DeInit(i2cHandle->hdmatx);
 
-    /* I2C2 interrupt Deinit */
-    HAL_NVIC_DisableIRQ(I2C2_EV_IRQn);
-    HAL_NVIC_DisableIRQ(I2C2_ER_IRQn);
+    // No interrupts to deinit (polling mode)
   /* USER CODE BEGIN I2C2_MspDeInit 1 */
 
   /* USER CODE END I2C2_MspDeInit 1 */
@@ -451,9 +436,7 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 
     // No DMA to deinit (DMA disabled for I2C3)
 
-    /* I2C3 interrupt Deinit */
-    HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_DisableIRQ(I2C3_ER_IRQn);
+    // No interrupts to deinit (polling mode)
   /* USER CODE BEGIN I2C3_MspDeInit 1 */
 
   /* USER CODE END I2C3_MspDeInit 1 */
@@ -465,39 +448,20 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
 // Full I2C3 reset with GPIO reconfiguration
 void I2C3_Reset(void)
 {
-    // 1. Disable I2C3 interrupts
-    HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_DisableIRQ(I2C3_ER_IRQn);
-
-    // 2. Deinit I2C3 peripheral
     HAL_I2C_DeInit(&hi2c3);
     HAL_Delay(5);
 
-    // 3. Deinit GPIO for I2C3 (PA8=SCL, PC9=SDA)
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8);
     HAL_GPIO_DeInit(GPIOC, GPIO_PIN_9);
 
-    // 4. Re-init I2C3
     MX_I2C3_Init();
     HAL_Delay(10);
-
-    // 5. Re-enable interrupts
-    HAL_NVIC_SetPriority(I2C3_EV_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_SetPriority(I2C3_ER_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_ER_IRQn);
-
-    HAL_Delay(5);
 }
 
 // I2C总线恢复：通过RCC重置I2C3外设并清除GPIO卡死状态
 void I2C3_BusRecover(void)
 {
-    // 1. 首先禁用I2C3中断，避免干扰
-    HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_DisableIRQ(I2C3_ER_IRQn);
-
-    // 2. 强制复位I2C3外设（立即生效，释放总线控制权）
+    // 1. 强制复位I2C3外设
     __HAL_RCC_I2C3_FORCE_RESET();
     HAL_Delay(10);
 
@@ -565,15 +529,89 @@ void I2C3_BusRecover(void)
     // 9. 重新初始化I2C3
     MX_I2C3_Init();
     HAL_Delay(100);
-
-    // 10. 重新启用中断
-    HAL_NVIC_SetPriority(I2C3_EV_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_SetPriority(I2C3_ER_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_ER_IRQn);
-
-    HAL_Delay(100);
 }
 
-/* USER CODE END 1 */
+// Fast I2C3 bus recovery using DWT microsecond delays (no HAL_Delay)
+// Sends 9 SCL pulses at ~10kHz to release any stuck slave, then reinits I2C3.
+// Takes ~2ms total vs ~800ms for I2C3_BusRecover().
+void I2C3_BusRecover_Fast(void)
+{
+    // Use DWT for us-level delays
+    extern uint32_t SystemCoreClock;
+    uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+
+    #define DWT_DELAY_US(us) do { \
+        uint32_t _start = DWT->CYCCNT; \
+        while ((DWT->CYCCNT - _start) < (us) * cycles_per_us) {} \
+    } while(0)
+
+    // Reset HAL handle state first so no HAL function tries to use the peripheral
+    __HAL_I2C_RESET_HANDLE_STATE(&hi2c3);
+
+    __HAL_RCC_I2C3_FORCE_RESET();
+    DWT_DELAY_US(100);
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+
+    GPIO_InitTypeDef g = {0};
+    g.Pin = GPIO_PIN_8;
+    // Push-pull so we can FORCE SCL high even if a slave is clock-stretching
+    g.Mode = GPIO_MODE_OUTPUT_PP;
+    g.Pull = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &g);
+    g.Pin = GPIO_PIN_9;
+    HAL_GPIO_Init(GPIOC, &g);
+
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+    DWT_DELAY_US(50);
+
+    // 9 SCL pulses at ~10kHz (50us per half-cycle)
+    for (int i = 0; i < 9; i++) {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+        DWT_DELAY_US(50);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+        DWT_DELAY_US(50);
+    }
+
+    // STOP condition: SDA low then high while SCL high
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+    DWT_DELAY_US(50);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+    DWT_DELAY_US(50);
+
+    __HAL_RCC_I2C3_RELEASE_RESET();
+    DWT_DELAY_US(100);
+
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_9);
+    DWT_DELAY_US(50);
+
+    // Force-reset HAL handle state so HAL_I2C_Init doesn't try to DeInit first
+    __HAL_I2C_RESET_HANDLE_STATE(&hi2c3);
+    MX_I2C3_Init();
+    DWT_DELAY_US(200);
+
+    // STM32H7 errata: analog filter can cause false BUSY after reset.
+    // If BUSY is still set, apply PE=0/PE=1 software reset up to 3 times.
+    for (int _attempt = 0; _attempt < 3; _attempt++) {
+        if (!__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY))
+            break;
+        // Disable analog filter (ANFOFF=1), then PE=0, then PE=1, re-enable filter
+        SET_BIT(hi2c3.Instance->CR1, I2C_CR1_ANFOFF);
+        DWT_DELAY_US(10);
+        CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+        DWT_DELAY_US(10);
+        while (READ_BIT(hi2c3.Instance->CR1, I2C_CR1_PE)) {}
+        CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_ANFOFF);
+        SET_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+        DWT_DELAY_US(100);
+    }
+
+    #undef DWT_DELAY_US
+}
+
+
 

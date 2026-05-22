@@ -11,6 +11,16 @@
 extern I2C_HandleTypeDef hi2c3;
 extern void USB_Send_String(char *str);
 
+// DWT microsecond timer
+static inline void dwt_init(void) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+static inline uint32_t dwt_us(void) {
+    return DWT->CYCCNT / (SystemCoreClock / 1000000U);
+}
+
 typedef struct {
     tmag3001_t dev;
     uint8_t inited;
@@ -50,6 +60,149 @@ static int tmag_append_line(char *out, size_t out_size, size_t *off,
            CSV_AppendCRLF(out, out_size, off);
 }
 
+static void tmag_i2c_recover(void)
+{
+    I2C3_BusRecover_Fast();
+}
+
+// Send N SCL pulses with TCA channel already selected so the sensor sees them.
+// A TMAG3001 read transaction is 7 bytes = 63 bits (56 data + 7 ACK).
+// We send 72 pulses (8 bytes × 9 bits) to guarantee clocking out any stuck
+// transaction, followed by a STOP condition to reset the sensor state machine.
+// Uses 5us half-cycle (~100kHz) for ~720us total overhead per channel.
+#define TMAG_RECOVERY_SCL_PULSES  72
+
+static void tmag_send_scl_pulses_and_stop(int n_pulses)
+{
+    uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+    #define _DUS(us) do { uint32_t _s=DWT->CYCCNT; while((DWT->CYCCNT-_s)<(us)*cycles_per_us){} } while(0)
+
+    CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+    _DUS(5);
+    while (READ_BIT(hi2c3.Instance->CR1, I2C_CR1_PE)) {}
+
+    GPIO_InitTypeDef g = {0};
+    g.Mode = GPIO_MODE_OUTPUT_PP;
+    g.Pull = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_HIGH;
+    g.Pin = GPIO_PIN_8; HAL_GPIO_Init(GPIOA, &g);
+    g.Pin = GPIO_PIN_9; HAL_GPIO_Init(GPIOC, &g);
+
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+    _DUS(5);
+
+    // N SCL pulses at ~100kHz — sensor sees them because TCA channel is selected
+    for (int i = 0; i < n_pulses; i++) {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); _DUS(5);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);   _DUS(5);
+    }
+    // STOP: SDA low→high while SCL high
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET); _DUS(5);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);   _DUS(5);
+
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_9);
+    g.Mode = GPIO_MODE_AF_OD;
+    g.Pull = GPIO_PULLUP;
+    g.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    g.Alternate = GPIO_AF4_I2C3;
+    g.Pin = GPIO_PIN_8; HAL_GPIO_Init(GPIOA, &g);
+    g.Pin = GPIO_PIN_9; HAL_GPIO_Init(GPIOC, &g);
+
+    SET_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+    _DUS(20);
+
+    if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+        SET_BIT(hi2c3.Instance->CR1, I2C_CR1_ANFOFF);
+        _DUS(10);
+        CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+        _DUS(10);
+        while (READ_BIT(hi2c3.Instance->CR1, I2C_CR1_PE)) {}
+        CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_ANFOFF);
+        SET_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+        _DUS(20);
+    }
+
+    #undef _DUS
+}
+
+// Pre-read recovery: select TCA channel, then send 72 SCL pulses to clock out
+// any stuck transaction from the previous cycle.
+static void tmag_recover_sensor_on_channel(uint8_t tca_ch_mask)
+{
+    tmag_send_scl_pulses_and_stop(TMAG_RECOVERY_SCL_PULSES);
+    TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
+}
+
+// Post-read cleanup: send 72 SCL pulses while TCA channel is still selected,
+// so sensors are left in a clean state before TCA deselect.
+static void tmag_cleanup_channel(uint8_t tca_ch_mask)
+{
+    (void)tca_ch_mask;  // channel already selected by caller
+    tmag_send_scl_pulses_and_stop(TMAG_RECOVERY_SCL_PULSES);
+}
+
+// Fast BUSY clear: STM32H7 errata — analog filter can set false BUSY after STOP.
+// Also sends 9 SCL pulses to release any sensor holding SDA low.
+// ~200us total. Only call when BUSY is actually set.
+static void tmag_clear_false_busy(void)
+{
+    uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+    #define _DUSB(us) do { uint32_t _s=DWT->CYCCNT; while((DWT->CYCCNT-_s)<(us)*cycles_per_us){} } while(0)
+
+    CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+    _DUSB(5);
+    while (READ_BIT(hi2c3.Instance->CR1, I2C_CR1_PE)) {}
+
+    GPIO_InitTypeDef g = {0};
+    g.Mode = GPIO_MODE_OUTPUT_PP;
+    g.Pull = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_HIGH;
+    g.Pin = GPIO_PIN_8; HAL_GPIO_Init(GPIOA, &g);
+    g.Pin = GPIO_PIN_9; HAL_GPIO_Init(GPIOC, &g);
+
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+    _DUSB(5);
+
+    // 9 SCL pulses to release any sensor holding SDA low
+    for (int i = 0; i < 9; i++) {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET); _DUSB(5);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);   _DUSB(5);
+    }
+    // STOP: SDA low→high while SCL high
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET); _DUSB(5);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);   _DUSB(5);
+
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_8);
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_9);
+    g.Mode = GPIO_MODE_AF_OD;
+    g.Pull = GPIO_PULLUP;
+    g.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    g.Alternate = GPIO_AF4_I2C3;
+    g.Pin = GPIO_PIN_8; HAL_GPIO_Init(GPIOA, &g);
+    g.Pin = GPIO_PIN_9; HAL_GPIO_Init(GPIOC, &g);
+
+    SET_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+    _DUSB(20);
+
+    // ANFOFF errata fix if still BUSY
+    for (int _a = 0; _a < 3; _a++) {
+        if (!__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) break;
+        SET_BIT(hi2c3.Instance->CR1, I2C_CR1_ANFOFF);
+        _DUSB(5);
+        CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+        _DUSB(5);
+        while (READ_BIT(hi2c3.Instance->CR1, I2C_CR1_PE)) {}
+        CLEAR_BIT(hi2c3.Instance->CR1, I2C_CR1_ANFOFF);
+        SET_BIT(hi2c3.Instance->CR1, I2C_CR1_PE);
+        _DUSB(20);
+    }
+
+    #undef _DUSB
+}
+
 static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_size, size_t *off)
 {
     int sensor_count = 0;
@@ -62,39 +215,95 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
 
     if (sensor_count == 0) return 1;
 
+    // Pre-TCA: recover main bus if stuck (fixes TCA itself being stuck)
+    if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+        tmag_i2c_recover();
+    }
+
+    uint32_t t_tca_start = dwt_us();
     if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
+        tmag_i2c_recover();
         return 0;
     }
-#if TMAG3001_READ_TCA_SETTLE_MS > 0
-    HAL_Delay(TMAG3001_READ_TCA_SETTLE_MS);
-#endif
+    uint32_t t_tca_done = dwt_us();
+
+    // Channel-level recovery: send 72 SCL pulses after TCA select to clock out
+    // any stuck sensor state from the previous cycle. This is the primary recovery
+    // for the first sensor on each channel.
+    tmag_recover_sensor_on_channel(tca_ch_mask);
+
+    static uint32_t dbg_ch_count = 0;
+    dbg_ch_count++;
+
+    uint32_t t_ch_start = dwt_us();
 
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
         TMAG3001_Instance_t *inst = &g_tmag_list[i];
         if (!inst->inited) continue;
         if (inst->tca_ch_mask != tca_ch_mask) continue;
 
-        tmag3001_data_t data;
-        int read_ok = 0;
-        for (int retry = 0; retry < 3; retry++) {
-            if (TMAG3001_ReadData(&inst->dev, &data) == HAL_OK) {
-                read_ok = 1;
-                break;
-            }
-#if TMAG3001_READ_RETRY_DELAY_MS > 0
-            HAL_Delay(TMAG3001_READ_RETRY_DELAY_MS);
-#endif
+        // Per-sensor recovery: send SCL pulses + STOP + TCA reselect before each read.
+        // 0x36 (A2=SDA) needs more pulses — its address pin is on SDA so it's more
+        // likely to be mid-transaction after a TCA switch. Use 36 pulses for 0x36,
+        // 18 pulses for other addresses.
+        {
+            int n_pulses = (inst->addr7 == TMAG3001_ADDR_A2_SDA) ? 36 : 18;
+            tmag_send_scl_pulses_and_stop(n_pulses);
         }
-        if (!read_ok) continue;
+        TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
+
+        uint32_t t_sensor_start = dwt_us();
+        tmag3001_data_t data;
+        HAL_StatusTypeDef read_status = HAL_ERROR;
+        for (int retry = 0; retry < 2; retry++) {
+            read_status = TMAG3001_ReadData(&inst->dev, &data);
+            if (read_status == HAL_OK) break;
+            // Full bus recovery + TCA reselect
+            tmag_i2c_recover();
+            TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
+            // Channel-aware recovery if sensor still stuck after TCA reselect
+            if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+                tmag_recover_sensor_on_channel(tca_ch_mask);
+            }
+        }
+        uint32_t t_sensor_done = dwt_us();
+        uint32_t read_us = t_sensor_done - t_sensor_start;
+
+        // Always log timing (every read, not sampled)
+        {
+            char tmp[96];
+            int dn = snprintf(tmp, sizeof(tmp),
+                "DBT,ch=%02x,s=%02x,tca=%luus,rd=%luus,ok=%d\r\n",
+                tca_ch_mask,
+                inst->addr7,
+                t_tca_done - t_tca_start,
+                read_us,
+                (read_status == HAL_OK) ? 1 : 0);
+            if (dn > 0) CSV_AppendString(out, out_size, off, tmp);
+        }
+
+        if (read_status != HAL_OK) continue;
 
         if (!tmag_append_line(out, out_size, off, tca_ch_mask, inst->addr7, &data)) {
+            TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
             return 0;
         }
-
-#if TMAG3001_READ_POST_DELAY_MS > 0
-        HAL_Delay(TMAG3001_READ_POST_DELAY_MS);
-#endif
     }
+
+    uint32_t t_ch_done = dwt_us();
+
+    // Log per-channel total time every call
+    {
+        char tmp[64];
+        int dn = snprintf(tmp, sizeof(tmp),
+            "DBCH,ch=%02x,total=%luus\r\n",
+            tca_ch_mask,
+            t_ch_done - t_ch_start);
+        if (dn > 0) CSV_AppendString(out, out_size, off, tmp);
+    }
+
+    // Post-read cleanup removed: per-sensor recovery at the start of each read
+    // handles bus cleanup, so no cleanup needed after the last sensor.
 
     TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
     return 1;
@@ -103,9 +312,11 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
 // TMAG硬件复位：通过I2C3_RESET线复位TCA Mux和所有TMAG传感器
 static void tmag_hardware_reset(void)
 {
-    HAL_NVIC_DisableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_DisableIRQ(I2C3_ER_IRQn);
-
+    // Force-reset I2C3 peripheral before DeInit to avoid hanging on stuck bus
+    __HAL_RCC_I2C3_FORCE_RESET();
+    HAL_Delay(5);
+    __HAL_RCC_I2C3_RELEASE_RESET();
+    HAL_Delay(2);
     HAL_I2C_DeInit(&hi2c3);
 
     HAL_GPIO_WritePin(I2C3_RESET_GPIO_Port, I2C3_RESET_Pin, GPIO_PIN_RESET);
@@ -117,11 +328,6 @@ static void tmag_hardware_reset(void)
     extern void MX_I2C3_Init(void);
     MX_I2C3_Init();
 
-    HAL_NVIC_SetPriority(I2C3_EV_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_EV_IRQn);
-    HAL_NVIC_SetPriority(I2C3_ER_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C3_ER_IRQn);
-
     HAL_Delay(100);
 }
 
@@ -130,6 +336,7 @@ void Sensor_TMAG3001_Init_All(void)
     int idx = 0;
 
     memset(g_tmag_list, 0, sizeof(g_tmag_list));
+    dwt_init();
 
     printf("TMAG: init start\r\n");
     fflush(stdout);

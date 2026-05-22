@@ -46,7 +46,7 @@
 #define TMAG3001_DEV_CFG1_I2C_RD_STANDARD   0x00
 #define TMAG3001_DEV_CFG1_DEFAULT           (TMAG3001_DEV_CFG1_CRC_DISABLED | \
                                              TMAG3001_DEV_CFG1_TEMPCO_NONE | \
-                                             TMAG3001_DEV_CFG1_CONV_AVG_16X | \
+                                             TMAG3001_DEV_CFG1_CONV_AVG_1X | \
                                              TMAG3001_DEV_CFG1_I2C_RD_STANDARD)
 
 // Device_Config_2: Operating_Mode[1:0] is bits [1:0]; 2h selects continuous

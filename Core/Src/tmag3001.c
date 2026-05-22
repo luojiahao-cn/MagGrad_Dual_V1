@@ -2,9 +2,9 @@
 
 // TMAG3001 standard register access uses a write of the register pointer
 // followed by a repeated START read. The device auto-increments the pointer.
-#define TMAG_WRITE_TIMEOUT_MS  50
-#define TMAG_READ_TIMEOUT_MS   50
-#define TMAG_READY_TIMEOUT_MS  25
+#define TMAG_WRITE_TIMEOUT_MS  5
+#define TMAG_READ_TIMEOUT_MS   5
+#define TMAG_READY_TIMEOUT_MS  5
 #define TMAG_PROBE_RETRIES     15
 
 static HAL_StatusTypeDef write_reg(tmag3001_t *dev, uint8_t reg, uint8_t val)

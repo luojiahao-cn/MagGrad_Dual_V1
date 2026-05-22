@@ -128,3 +128,41 @@ RESET = PB12
 ```
 
 Do not remove the bus-clear path unless the hardware is changed and long-duration serial testing confirms no downstream branch holds SDA low.
+
+## TMAG3001 Clock-Stretching and SCL Pulse Recovery (2026-05-22)
+
+### 问题现象
+
+TMAG3001 在 ~18 Hz 下运行，约 39% 的读取耗时 7–8ms（正常应为 ~250us）。慢读集中在每个 TCA 通道的第 2、3 个传感器（0x35、0x36），第 1 个传感器（0x34）总是快的。
+
+### 根本原因
+
+TMAG3001 工作在 continuous mode，内部 ADC 引擎和 I2C 从机状态机**并行运行**。I2C 规范允许从机在主机读取过程中用 clock stretching（拉低 SCL）来暂停通信，等待内部操作完成。
+
+TCA9548A 切换通道时，会在主总线上产生信号（`START + 0x70 + channel_mask + STOP`）。子总线上的传感器可能把这个事务的部分信号误解为发给自己的 I2C 事务，导致其 I2C 从机状态机进入"等待主机继续"的状态。下一个周期 STM32 再来读该传感器时，传感器立即用 clock stretching 拉住 SCL，HAL 等待 5ms 超时后才放弃，触发重试。
+
+第 1 个传感器（0x34）不受影响，因为它是通道切换后第一个被读取的，此时传感器状态机还没有被后续读取"污染"。
+
+### 为什么 9 个 SCL 脉冲不够
+
+I2C 规范建议 9 个 SCL 脉冲来释放卡住的从机（1 字节 8 bits + 1 ACK bit）。但 TMAG3001 一次读取是 7 个字节（56 data bits + 7 ACK bits = 63 bits）。如果传感器卡在第 1 个字节，需要 63 个脉冲才能把整个事务时钟出去。9 个脉冲只能释放当前字节，传感器仍然认为后续字节还没传完。
+
+### 解决方案
+
+每次 TCA 通道切换后，以及每个传感器读取前，发送 72 个 SCL 脉冲（8 字节 × 9 bits，留有余量）加一个 STOP 条件，强制传感器把它认为"未完成的事务"走完，回到空闲状态。
+
+实现细节（`sensor_tmag3001.c`，`tmag_send_scl_pulses_and_stop()`）：
+
+1. **PE=0**：关闭 I2C3 外设，释放 SCL/SDA 引脚控制权
+2. **切换为推挽 GPIO**：I2C 外设使用开漏输出，无法对抗传感器的下拉。推挽输出可以强制拉高 SCL，即使传感器在 clock stretching
+3. **发送 N 个 SCL 脉冲**：100kHz（5us 半周期），传感器通过 TCA 子总线看到这些脉冲
+4. **发送 STOP 条件**：SCL 高时 SDA 低→高，传感器状态机复位到空闲
+5. **恢复为 AF 开漏 GPIO**：重新交给 I2C3 外设
+6. **PE=1**：重新使能 I2C3
+7. **ANFOFF errata**：STM32H7 模拟滤波器可能在复位后产生虚假 BUSY，用 PE=0/ANFOFF/PE=1 序列清除
+
+脉冲数量：通道级恢复用 72 个，传感器级恢复用 18 个（0x36 地址用 36 个，因为其 A2 引脚接 SDA，更容易卡住）。
+
+### 结果
+
+修复后：113 Hz，0% fail rate，0% 慢读（>2ms），每次读取 avg=242us。

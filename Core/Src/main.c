@@ -249,7 +249,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-	    char frame[1536];
+	    char frame[3072];
 	    int n = 0;
 #if SENSOR_OUTPUT_ICM
 	    n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
@@ -268,10 +268,28 @@ int main(void)
 #endif
 
 #if SENSOR_OUTPUT_TMAG
-    n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
-    if (n > 0) {
-        frame[n] = '\0';
-        USB_Send_String(frame);
+    {
+        static uint32_t dbg_cycle = 0;
+
+        uint32_t t_read_start = HAL_GetTick();
+        n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
+        uint32_t t_read_end = HAL_GetTick();
+
+        if (n > 0) {
+            frame[n] = '\0';
+            uint32_t t_usb_start = HAL_GetTick();
+            USB_Send_String(frame);
+            uint32_t t_usb_end = HAL_GetTick();
+
+            dbg_cycle++;
+            if (dbg_cycle % 5 == 0) {
+                printf("DBG,cycle=%lu,read=%lums,usb=%lums,frame=%d\r\n",
+                    dbg_cycle,
+                    t_read_end - t_read_start,
+                    t_usb_end - t_usb_start,
+                    n);
+            }
+        }
     }
 #endif
 
