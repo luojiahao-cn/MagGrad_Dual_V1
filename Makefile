@@ -123,6 +123,7 @@ FP_FLAGS  = -mfpu=fpv5-d16 -mfloat-abi=hard
 # C 编译
 CFLAGS  = $(OPT) $(MCU_FLAGS) $(FP_FLAGS) -std=c11 -c
 CFLAGS += $(DEFS)
+CFLAGS += $(EXTRA_DEFS)
 CFLAGS += $(IPATH)
 CFLAGS += -MD -MP -MF"$(@:%.o=%.d)"
 

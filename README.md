@@ -105,11 +105,14 @@ manufacturer-ID register reads to return measurement-frame bytes instead of
 initialization. Keep that force-write in place so a previous bad configuration
 does not survive a reset line pulse.
 
-For stable full-frame serial output, the TMAG read path currently keeps a 1 ms
-mux-settle delay after each TCA channel selection and a 2 ms delay after each
-successful sensor read. In 2026-05-18 testing this produced about 23 full
-12-sensor TMAG frames per second. Removing the delays entirely caused TMAG CSV
-rows to disappear in the current I2C3/TCA/USB CDC timing setup.
+For stable high-rate serial output, the TMAG read path currently keeps the
+explicit delay macros at 0 ms and relies on the SCL-pulse recovery path below.
+With USB CSV output enabled, 2026-05-27 testing measured about 70 full
+12-sensor TMAG frames per second. The current read loop keeps debug output off
+and uses a 150 us inter-sensor guard delay; removing the debug output without
+that guard caused extra recovery overhead and reduced steady output to about
+39 Hz. A later direct-result-read experiment was not accepted: it initialized
+only 9/12 sensors on the current board state and did not produce stable output.
 
 AK09973D I2C1 pins are:
 
@@ -165,4 +168,29 @@ I2C 规范建议 9 个 SCL 脉冲来释放卡住的从机（1 字节 8 bits + 1 
 
 ### 结果
 
-修复后：113 Hz，0% fail rate，0% 慢读（>2ms），每次读取 avg=242us。
+修复后内部读路径曾达到 113 Hz，0% fail rate，0% 慢读（>2ms），每次读取
+avg=242us。端到端 USB CSV 输出会更低，当前实测约 52 Hz 全 12 颗/轮。
+
+## End-to-End USB Rate Measurements (2026-05-27)
+
+Measured by building each output combination with `EXTRA_DEFS`, flashing through
+SWD, then reading `/dev/cu.usbmodem*` for 6 seconds. These are end-to-end USB
+CSV output rates, not only sensor bus transaction rates.
+
+| Build output | AK full-frame Hz | TMAG full-frame Hz | ICM line Hz |
+| --- | ---: | ---: | ---: |
+| ICM only | - | - | 8911.78 |
+| AK only | 244.39 | - | - |
+| TMAG only | - | 70.42 | - |
+| AK + ICM | 236.81 | - | 236.78 |
+| TMAG + ICM | - | 69.90 | 69.82 |
+| AK + TMAG | 54.64 | 54.65 | - |
+| AK + TMAG + ICM | 54.46 | 54.49 | 54.49 |
+
+For repeatable combination tests without editing `main.c`, pass output macros
+through `EXTRA_DEFS`, for example:
+
+```sh
+make clean
+make "EXTRA_DEFS=-DSENSOR_OUTPUT_ICM=1 -DSENSOR_OUTPUT_AK=0 -DSENSOR_OUTPUT_TMAG=1"
+```

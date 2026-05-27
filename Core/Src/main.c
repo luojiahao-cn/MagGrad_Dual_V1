@@ -71,9 +71,15 @@ static void MPU_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+#ifndef SENSOR_OUTPUT_ICM
 #define SENSOR_OUTPUT_ICM   0
+#endif
+#ifndef SENSOR_OUTPUT_AK
 #define SENSOR_OUTPUT_AK    0
+#endif
+#ifndef SENSOR_OUTPUT_TMAG
 #define SENSOR_OUTPUT_TMAG  1
+#endif
 
 // USB CDC发送字符串
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -269,26 +275,11 @@ int main(void)
 
 #if SENSOR_OUTPUT_TMAG
     {
-        static uint32_t dbg_cycle = 0;
-
-        uint32_t t_read_start = HAL_GetTick();
         n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
-        uint32_t t_read_end = HAL_GetTick();
 
         if (n > 0) {
             frame[n] = '\0';
-            uint32_t t_usb_start = HAL_GetTick();
             USB_Send_String(frame);
-            uint32_t t_usb_end = HAL_GetTick();
-
-            dbg_cycle++;
-            if (dbg_cycle % 5 == 0) {
-                printf("DBG,cycle=%lu,read=%lums,usb=%lums,frame=%d\r\n",
-                    dbg_cycle,
-                    t_read_end - t_read_start,
-                    t_usb_end - t_usb_start,
-                    n);
-            }
         }
     }
 #endif

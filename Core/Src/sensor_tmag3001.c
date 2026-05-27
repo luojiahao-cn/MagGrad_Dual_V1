@@ -21,6 +21,13 @@ static inline uint32_t dwt_us(void) {
     return DWT->CYCCNT / (SystemCoreClock / 1000000U);
 }
 
+static void tmag_delay_us(uint32_t us)
+{
+    uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+    uint32_t start = DWT->CYCCNT;
+    while ((DWT->CYCCNT - start) < (us * cycles_per_us)) {}
+}
+
 typedef struct {
     tmag3001_t dev;
     uint8_t inited;
@@ -220,22 +227,15 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
         tmag_i2c_recover();
     }
 
-    uint32_t t_tca_start = dwt_us();
     if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
         tmag_i2c_recover();
         return 0;
     }
-    uint32_t t_tca_done = dwt_us();
 
     // Channel-level recovery: send 72 SCL pulses after TCA select to clock out
     // any stuck sensor state from the previous cycle. This is the primary recovery
     // for the first sensor on each channel.
     tmag_recover_sensor_on_channel(tca_ch_mask);
-
-    static uint32_t dbg_ch_count = 0;
-    dbg_ch_count++;
-
-    uint32_t t_ch_start = dwt_us();
 
     for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
         TMAG3001_Instance_t *inst = &g_tmag_list[i];
@@ -252,7 +252,6 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
         }
         TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
 
-        uint32_t t_sensor_start = dwt_us();
         tmag3001_data_t data;
         HAL_StatusTypeDef read_status = HAL_ERROR;
         for (int retry = 0; retry < 2; retry++) {
@@ -266,21 +265,6 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
                 tmag_recover_sensor_on_channel(tca_ch_mask);
             }
         }
-        uint32_t t_sensor_done = dwt_us();
-        uint32_t read_us = t_sensor_done - t_sensor_start;
-
-        // Always log timing (every read, not sampled)
-        {
-            char tmp[96];
-            int dn = snprintf(tmp, sizeof(tmp),
-                "DBT,ch=%02x,s=%02x,tca=%luus,rd=%luus,ok=%d\r\n",
-                tca_ch_mask,
-                inst->addr7,
-                t_tca_done - t_tca_start,
-                read_us,
-                (read_status == HAL_OK) ? 1 : 0);
-            if (dn > 0) CSV_AppendString(out, out_size, off, tmp);
-        }
 
         if (read_status != HAL_OK) continue;
 
@@ -288,18 +272,8 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
             TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
             return 0;
         }
-    }
 
-    uint32_t t_ch_done = dwt_us();
-
-    // Log per-channel total time every call
-    {
-        char tmp[64];
-        int dn = snprintf(tmp, sizeof(tmp),
-            "DBCH,ch=%02x,total=%luus\r\n",
-            tca_ch_mask,
-            t_ch_done - t_ch_start);
-        if (dn > 0) CSV_AppendString(out, out_size, off, tmp);
+        tmag_delay_us(150);
     }
 
     // Post-read cleanup removed: per-sensor recovery at the start of each read
