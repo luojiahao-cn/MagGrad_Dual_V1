@@ -105,14 +105,13 @@ manufacturer-ID register reads to return measurement-frame bytes instead of
 initialization. Keep that force-write in place so a previous bad configuration
 does not survive a reset line pulse.
 
-For stable high-rate serial output, the TMAG read path currently keeps the
-explicit delay macros at 0 ms and relies on the SCL-pulse recovery path below.
-With USB CSV output enabled, 2026-05-27 testing measured about 70 full
-12-sensor TMAG frames per second. The current read loop keeps debug output off
-and uses a 150 us inter-sensor guard delay; removing the debug output without
-that guard caused extra recovery overhead and reduced steady output to about
-39 Hz. A later direct-result-read experiment was not accepted: it initialized
-only 9/12 sensors on the current board state and did not produce stable output.
+For stable high-rate serial output, the TMAG read path keeps the explicit delay
+macros at 0 ms and relies on the SCL-pulse recovery path below. With USB CSV
+output enabled, 2026-05-28 testing measured 258.84 full 12-sensor TMAG frames
+per second using faster I2C3 timing, 1 us recovery-pulse half-cycles, no
+inter-sensor guard delay, and no TCA deselect after each channel. A direct
+result-read experiment was not accepted: it initialized only 9/12 sensors on the
+current board state and did not produce stable output.
 
 AK09973D I2C1 pins are:
 
@@ -158,7 +157,7 @@ I2C 规范建议 9 个 SCL 脉冲来释放卡住的从机（1 字节 8 bits + 1 
 
 1. **PE=0**：关闭 I2C3 外设，释放 SCL/SDA 引脚控制权
 2. **切换为推挽 GPIO**：I2C 外设使用开漏输出，无法对抗传感器的下拉。推挽输出可以强制拉高 SCL，即使传感器在 clock stretching
-3. **发送 N 个 SCL 脉冲**：100kHz（5us 半周期），传感器通过 TCA 子总线看到这些脉冲
+3. **发送 N 个 SCL 脉冲**：当前默认 1us 半周期，传感器通过 TCA 子总线看到这些脉冲
 4. **发送 STOP 条件**：SCL 高时 SDA 低→高，传感器状态机复位到空闲
 5. **恢复为 AF 开漏 GPIO**：重新交给 I2C3 外设
 6. **PE=1**：重新使能 I2C3
@@ -169,7 +168,39 @@ I2C 规范建议 9 个 SCL 脉冲来释放卡住的从机（1 字节 8 bits + 1 
 ### 结果
 
 修复后内部读路径曾达到 113 Hz，0% fail rate，0% 慢读（>2ms），每次读取
-avg=242us。端到端 USB CSV 输出会更低，当前实测约 52 Hz 全 12 颗/轮。
+avg=242us。2026-05-28 进一步优化 I2C3 timing 和恢复脉冲后，端到端 USB CSV
+输出长测达到 258.84 Hz 全 12 颗/轮。
+
+## TMAG3001 High-Rate Tuning (2026-05-28)
+
+The accepted default TMAG-only configuration is:
+
+```text
+I2C3_TIMING_VALUE = 0x00200408
+TMAG_PULSE_HALF_US = 1
+TMAG_GUARD_US = 0
+TMAG_RESELECT_AFTER_SENSOR_PULSE = 0
+TMAG_SKIP_GND_SENSOR_PULSE = 1
+TMAG_DESELECT_AFTER_CHANNEL = 0
+```
+
+Measured steady TMAG-only USB CSV rates:
+
+| Configuration | Full 12-sensor frame Hz | Result |
+| --- | ---: | --- |
+| Old 400 kHz timing, 150 us guard | ~70 | stable baseline |
+| Fast I2C3 timing, 30 us guard, keep channel deselect | 119.16 | stable, 20 s |
+| Fast I2C3 timing, 30 us guard, no channel deselect | 119.92 | stable, 60 s |
+| Fast I2C3 timing, 4 us pulse half-cycle, no guard | 144.12 | stable short test |
+| Fast I2C3 timing, 3 us pulse half-cycle, no guard | 169.63 | stable short test |
+| Fast I2C3 timing, 2 us pulse half-cycle, no guard | 205.56 | stable short test |
+| Fast I2C3 timing, 1 us pulse half-cycle, no guard | 258.84 | stable, 60 s |
+| No recovery pulses | 36.48 | rejected, uneven sensor counts |
+| 0 us pulse half-cycle | 45.30 | rejected, ineffective recovery |
+
+The high-rate result depends on keeping the recovery pulses, just making them
+shorter. Removing the pulses makes the read loop slower because the hidden
+recovery/retry path dominates.
 
 ## End-to-End USB Rate Measurements (2026-05-27)
 
