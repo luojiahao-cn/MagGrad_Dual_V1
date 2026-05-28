@@ -202,6 +202,30 @@ The high-rate result depends on keeping the recovery pulses, just making them
 shorter. Removing the pulses makes the read loop slower because the hidden
 recovery/retry path dominates.
 
+## AK09973D I2C1/I2C2 High-Rate Tuning (2026-05-28)
+
+I2C1 and I2C2 use the same faster timing value as I2C3 by default:
+
+```text
+I2C1_TIMING_VALUE = 0x00200408
+I2C2_TIMING_VALUE = 0x00200408
+```
+
+AK-only USB CSV measurements:
+
+| Configuration | AK full-frame Hz | Result |
+| --- | ---: | --- |
+| Original I2C1/I2C2 timing `0x00901227` | 243.73 | stable short test |
+| Only I2C2 at `0x00200408` | 322.31 | stable short test |
+| Only I2C1 at `0x00200408` | 322.80 | stable short test |
+| I2C1 + I2C2 at `0x00200408` | 476.69 | stable, 60 s |
+| I2C1 + I2C2 at `0x00100309` | 476.76 | stable short test |
+
+The accepted default is `0x00200408` on both AK buses because it matches the
+TMAG/I2C3 timing and passed the 60 s AK-only test with 12/12 sensors, 0 bad CSV
+lines, and all AK error fields equal to 0. AK + TMAG together measured about
+168.3 Hz for both sensor families over USB CSV with 0 bad lines.
+
 ## End-to-End USB Rate Measurements (2026-05-27)
 
 Measured by building each output combination with `EXTRA_DEFS`, flashing through
