@@ -23,5 +23,8 @@
 void Sensor_TMAG3001_Init_All(void);
 int Sensor_TMAG3001_ReadToCSV(uint8_t tca_ch_mask, char *out_line, size_t out_size);
 int Sensor_TMAG3001_ReadAllToCSV(char *out, size_t out_size);
+int Sensor_TMAG3001_ReadAllToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
+                                    uint32_t *frames, uint32_t *skipped,
+                                    uint32_t *errors);
 void Sensor_TMAG3001_ReadAll(void);
 int Sensor_TMAG3001_GetCount(void);

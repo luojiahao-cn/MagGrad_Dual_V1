@@ -11,6 +11,57 @@ make flash
 
 Serial debug output is sent to both USB CDC and USART1 at 115200 baud.
 
+## Output Formats
+
+The default runtime sensor stream is binary. CSV remains available for debugging
+and rate comparisons:
+
+```sh
+make
+make "EXTRA_DEFS=-DSENSOR_OUTPUT_FORMAT=0"   # CSV mode
+```
+
+Binary frame layout:
+
+```text
+sync          u8[2]   0xA5 0x5A
+version       u8      1
+type          u8      1=AK, 2=TMAG, 3=ICM, 0xE0=ERR, 0xF0=STATS
+seq           u32le
+tick_ms       u32le   HAL_GetTick()
+payload_len   u16le
+payload       bytes
+crc16         u16le   CRC-16/CCITT-FALSE over version..payload
+```
+
+Payloads:
+
+```text
+AK    bus u8, mask u8, hx i16, hy i16, hz i16, status u8, err u8, dor u8
+TMAG  ch_mask u8, addr u8, x i16, y i16, z i16, status u8, flags u8
+ICM   ax i16, ay i16, az i16, gx i16, gy i16, gz i16, temp i16
+ERR   source u8, code u16, detail u32
+STATS ak_frames u32, tmag_frames u32, icm_frames u32, skipped u32, errors u32
+```
+
+Use the reader in auto mode for either stream:
+
+```sh
+python3 tools/usb_read.py --format auto --duration 10
+```
+
+Startup `printf()` text can appear before binary frames. The reader resyncs on
+`0xA5 0x5A` and reports skipped non-binary bytes.
+
+Initial binary-mode validation on 2026-05-28:
+
+| Build output | Binary result |
+| --- | ---: |
+| TMAG only | 253.06 Hz full 12-sensor frames, CRC errors 0, seq jumps 0 |
+| AK only | 454.43 Hz full 12-sensor frames, CRC errors 0, seq jumps 0 |
+| ICM only | 199.38 Hz data-ready frames, CRC errors 0, seq jumps 0 |
+| AK + TMAG | AK 171.21 Hz, TMAG 171.25 Hz, CRC errors 0, seq jumps 0 |
+
 ## Magnetometer Initialization Notes
 
 AK09973D and TMAG3001 sensors sit behind TCA9548A I2C multiplexers. A downstream sensor branch can hold SDA low if the previous I2C transaction is interrupted, if a device is left mid-transfer, or if a channel is selected while the downstream device is not ready. When that happens, the upstream bus looks broken even though the TCA and other channels may still be fine.

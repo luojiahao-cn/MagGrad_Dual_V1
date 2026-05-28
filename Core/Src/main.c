@@ -30,6 +30,7 @@
 #include "icm42670.h"
 #include "sensor_ak09973d.h"
 #include "sensor_tmag3001.h"
+#include "binary_writer.h"
 #include <stdio.h>
 #include <string.h>
 #include "usbd_cdc_if.h"
@@ -80,6 +81,9 @@ static void MPU_Config(void);
 #ifndef SENSOR_OUTPUT_TMAG
 #define SENSOR_OUTPUT_TMAG  1
 #endif
+#ifndef SENSOR_OUTPUT_FORMAT
+#define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
+#endif
 
 // USB CDC发送字符串
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -120,6 +124,11 @@ static void USB_Send_Buffer(const uint8_t *buf, uint16_t len)
 
         sent += chunk;
     }
+}
+
+void USB_Send_Raw(const uint8_t *buf, uint16_t len)
+{
+    USB_Send_Buffer(buf, len);
 }
 
 void USB_Send_String(char *str)
@@ -255,21 +264,76 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-	    char frame[3072];
+	    static uint8_t binary_frame[4096];
+	    static char frame[3072];
 	    int n = 0;
+#if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
+        static uint32_t binary_seq = 0;
+        static uint32_t ak_frames = 0;
+        static uint32_t tmag_frames = 0;
+        static uint32_t icm_frames = 0;
+        static uint32_t skipped = 0;
+        static uint32_t errors = 0;
+        static uint32_t last_stats_ms = 0;
+
+#if SENSOR_OUTPUT_ICM
+	    n = ICM42670_ReadToBinary(&icm, binary_frame, sizeof(binary_frame),
+                                  &binary_seq, &icm_frames, &skipped, &errors);
+	    if (n > 0) {
+	        USB_Send_Raw(binary_frame, (uint16_t)n);
+	    }
+#endif
+
+#if SENSOR_OUTPUT_AK
+    n = Sensor_AK09973D_ReadToBinary(binary_frame, sizeof(binary_frame),
+                                     &binary_seq, &ak_frames, &skipped, &errors);
+    if (n > 0) {
+        USB_Send_Raw(binary_frame, (uint16_t)n);
+    }
+#endif
+
+#if SENSOR_OUTPUT_TMAG
+    {
+        n = Sensor_TMAG3001_ReadAllToBinary(binary_frame, sizeof(binary_frame),
+                                            &binary_seq, &tmag_frames,
+                                            &skipped, &errors);
+
+        if (n > 0) {
+            USB_Send_Raw(binary_frame, (uint16_t)n);
+        }
+    }
+#endif
+
+    uint32_t now = HAL_GetTick();
+    if ((now - last_stats_ms) >= 1000U) {
+        size_t off = 0;
+        if (BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
+                                     binary_seq++, now,
+                                     ak_frames, tmag_frames, icm_frames,
+                                     skipped, errors)) {
+            USB_Send_Raw(binary_frame, (uint16_t)off);
+        }
+        last_stats_ms = now;
+    }
+
+#else
 #if SENSOR_OUTPUT_ICM
 	    n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
 	    if (n > 0) {
-	        frame[n] = '\0';
-	        USB_Send_String(frame);
+            if (n < (int)sizeof(frame)) {
+	            frame[n] = '\0';
+	            USB_Send_String(frame);
+            }
 	    }
 #endif
 
 #if SENSOR_OUTPUT_AK
     n = Sensor_AK09973D_ReadToCSV(frame, sizeof(frame));
     if (n > 0) {
-        frame[n] = '\0';
-        USB_Send_String(frame);
+        if (n < (int)sizeof(frame)) {
+            frame[n] = '\0';
+            USB_Send_String(frame);
+        }
     }
 #endif
 
@@ -278,10 +342,13 @@ int main(void)
         n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
 
         if (n > 0) {
-            frame[n] = '\0';
-            USB_Send_String(frame);
+            if (n < (int)sizeof(frame)) {
+                frame[n] = '\0';
+                USB_Send_String(frame);
+            }
         }
     }
+#endif
 #endif
 
     // LED 状态指示

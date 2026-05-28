@@ -1,5 +1,6 @@
 #include "icm42670.h"
 #include "csv_writer.h"
+#include "binary_writer.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -72,6 +73,15 @@ HAL_StatusTypeDef ICM42670_ReadRaw(icm42670_t *icm, icm42670_raw_t *out)
     return HAL_OK;
 }
 
+uint8_t ICM42670_IsDataReady(icm42670_t *icm)
+{
+    uint8_t st = 0;
+    if (r1(icm, 0x39, &st) != HAL_OK) {
+        return 1;
+    }
+    return (st & 0x01U) ? 1U : 0U;
+}
+
 int ICM42670_ReadToCSV(icm42670_t *icm, char *out, size_t out_size)
 {
     icm42670_raw_t d;
@@ -102,6 +112,44 @@ int ICM42670_ReadToCSV(icm42670_t *icm, char *out, size_t out_size)
         return 0;
     }
 
+    return (int)off;
+}
+
+int ICM42670_ReadToBinary(icm42670_t *icm, uint8_t *out, size_t out_size,
+                          uint32_t *seq, uint32_t *frames,
+                          uint32_t *skipped, uint32_t *errors)
+{
+    size_t off = 0;
+    icm42670_raw_t d;
+
+    if (!ICM42670_IsDataReady(icm)) {
+        if (skipped != NULL) (*skipped)++;
+        return 0;
+    }
+
+    if (ICM42670_ReadRaw(icm, &d) != HAL_OK) {
+        if (errors != NULL) (*errors)++;
+        (void)BinaryWriter_AppendError(out, out_size, &off,
+                                       (*seq)++, HAL_GetTick(),
+                                       BINARY_ERR_SOURCE_ICM, 2U, 0U);
+        return (int)off;
+    }
+
+    uint8_t payload[14];
+    size_t poff = 0;
+    BinaryWriter_PutI16(payload, &poff, d.ax);
+    BinaryWriter_PutI16(payload, &poff, d.ay);
+    BinaryWriter_PutI16(payload, &poff, d.az);
+    BinaryWriter_PutI16(payload, &poff, d.gx);
+    BinaryWriter_PutI16(payload, &poff, d.gy);
+    BinaryWriter_PutI16(payload, &poff, d.gz);
+    BinaryWriter_PutI16(payload, &poff, d.temp);
+
+    if (BinaryWriter_AppendFrame(out, out_size, &off, BINARY_FRAME_TYPE_ICM,
+                                 (*seq)++, HAL_GetTick(),
+                                 payload, (uint16_t)poff)) {
+        if (frames != NULL) (*frames)++;
+    }
     return (int)off;
 }
 

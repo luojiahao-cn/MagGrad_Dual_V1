@@ -5,6 +5,7 @@
 #include "main.h"
 #include "i2c.h"
 #include "csv_writer.h"
+#include "binary_writer.h"
 #include "sensor_ak09973d.h"
 #include "tca9548.h"
 
@@ -321,6 +322,62 @@ int Sensor_AK09973D_ReadToCSV(char *out, size_t out_size)
     TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
     TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, 0);
 #endif
+    return (int)off;
+}
+
+int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
+                                 uint32_t *frames, uint32_t *skipped,
+                                 uint32_t *errors)
+{
+    size_t off = 0;
+
+    for (int i = 0; i < AK09973D_COUNT && g_valid[i].dev.hi2c != NULL; i++) {
+        I2C_HandleTypeDef *hi2c = get_i2c(g_valid[i].i2c_bus);
+
+        if (ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask) != HAL_OK) {
+            if (errors != NULL) (*errors)++;
+            (void)BinaryWriter_AppendError(out, out_size, &off,
+                                           (*seq)++, HAL_GetTick(),
+                                           BINARY_ERR_SOURCE_AK, 1U,
+                                           HAL_I2C_GetError(hi2c));
+            continue;
+        }
+
+        ak09973d_magdata_t data;
+        if (AK09973D_ReadMagData(&g_valid[i].dev, &data) != HAL_OK) {
+            if (errors != NULL) (*errors)++;
+            (void)BinaryWriter_AppendError(out, out_size, &off,
+                                           (*seq)++, HAL_GetTick(),
+                                           BINARY_ERR_SOURCE_AK, 2U,
+                                           HAL_I2C_GetError(hi2c));
+            continue;
+        }
+
+        if ((data.status & AK09973D_ST_DRDY) == 0U) {
+            if (skipped != NULL) (*skipped)++;
+            continue;
+        }
+
+        uint8_t payload[11];
+        size_t poff = 0;
+        BinaryWriter_PutU8(payload, &poff, g_valid[i].i2c_bus);
+        BinaryWriter_PutU8(payload, &poff, g_valid[i].mask);
+        BinaryWriter_PutI16(payload, &poff, data.hx);
+        BinaryWriter_PutI16(payload, &poff, data.hy);
+        BinaryWriter_PutI16(payload, &poff, data.hz);
+        BinaryWriter_PutU8(payload, &poff, (data.status & AK09973D_ST_DRDY) ? 1U : 0U);
+        BinaryWriter_PutU8(payload, &poff, (data.status & AK09973D_ST_ERR) ? 1U : 0U);
+        BinaryWriter_PutU8(payload, &poff, (data.status & AK09973D_ST_DOR) ? 1U : 0U);
+
+        if (BinaryWriter_AppendFrame(out, out_size, &off, BINARY_FRAME_TYPE_AK,
+                                     (*seq)++, HAL_GetTick(),
+                                     payload, (uint16_t)poff)) {
+            if (frames != NULL) (*frames)++;
+        } else {
+            break;
+        }
+    }
+
     return (int)off;
 }
 

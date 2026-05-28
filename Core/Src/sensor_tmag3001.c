@@ -5,6 +5,7 @@
 #include "main.h"
 #include "i2c.h"
 #include "csv_writer.h"
+#include "binary_writer.h"
 #include "sensor_tmag3001.h"
 #include "tca9548.h"
 
@@ -335,6 +336,112 @@ static int tmag_read_channel_to_csv(uint8_t tca_ch_mask, char *out, size_t out_s
     return 1;
 }
 
+static int tmag_read_channel_to_binary(uint8_t tca_ch_mask, uint8_t *out,
+                                       size_t out_size, size_t *off,
+                                       uint32_t *seq, uint32_t *frames,
+                                       uint32_t *skipped, uint32_t *errors)
+{
+    int sensor_count = 0;
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        TMAG3001_Instance_t *inst = &g_tmag_list[i];
+        if (inst->inited && inst->tca_ch_mask == tca_ch_mask) {
+            sensor_count++;
+        }
+    }
+
+    if (sensor_count == 0) return 1;
+
+    if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+        tmag_i2c_recover();
+    }
+
+    if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask) != HAL_OK) {
+        tmag_i2c_recover();
+        if (errors != NULL) (*errors)++;
+        (void)BinaryWriter_AppendError(out, out_size, off,
+                                       (*seq)++, HAL_GetTick(),
+                                       BINARY_ERR_SOURCE_TMAG, 1U,
+                                       HAL_I2C_GetError(&hi2c3));
+        return 0;
+    }
+
+#if TMAG_RECOVERY_SCL_PULSES > 0
+    tmag_recover_sensor_on_channel(tca_ch_mask);
+#endif
+
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        TMAG3001_Instance_t *inst = &g_tmag_list[i];
+        if (!inst->inited) continue;
+        if (inst->tca_ch_mask != tca_ch_mask) continue;
+
+        int n_pulses = (inst->addr7 == TMAG3001_ADDR_A2_SDA) ? TMAG_PULSE_SDA : TMAG_PULSE_NORMAL;
+#if TMAG_SKIP_GND_SENSOR_PULSE
+        if (inst->addr7 == TMAG3001_ADDR_A2_GND) {
+            n_pulses = 0;
+        }
+#endif
+        if (n_pulses > 0) {
+            tmag_send_scl_pulses_and_stop(n_pulses);
+#if TMAG_RESELECT_AFTER_SENSOR_PULSE
+            TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
+#endif
+        }
+
+        tmag3001_data_t data;
+        HAL_StatusTypeDef read_status = HAL_ERROR;
+        for (int retry = 0; retry < 2; retry++) {
+            read_status = TMAG3001_ReadData(&inst->dev, &data);
+            if (read_status == HAL_OK) break;
+            tmag_i2c_recover();
+            TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, tca_ch_mask);
+            if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+                tmag_recover_sensor_on_channel(tca_ch_mask);
+            }
+        }
+
+        if (read_status != HAL_OK) {
+            if (errors != NULL) (*errors)++;
+            (void)BinaryWriter_AppendError(out, out_size, off,
+                                           (*seq)++, HAL_GetTick(),
+                                           BINARY_ERR_SOURCE_TMAG, 2U,
+                                           HAL_I2C_GetError(&hi2c3));
+            continue;
+        }
+
+        if ((data.status & TMAG3001_STATUS_DRDY) == 0U) {
+            if (skipped != NULL) (*skipped)++;
+            continue;
+        }
+
+        uint8_t payload[11];
+        size_t poff = 0;
+        BinaryWriter_PutU8(payload, &poff, tca_ch_mask);
+        BinaryWriter_PutU8(payload, &poff, inst->addr7);
+        BinaryWriter_PutI16(payload, &poff, data.x);
+        BinaryWriter_PutI16(payload, &poff, data.y);
+        BinaryWriter_PutI16(payload, &poff, data.z);
+        BinaryWriter_PutU8(payload, &poff, (data.status & TMAG3001_STATUS_DRDY) ? 1U : 0U);
+        BinaryWriter_PutU8(payload, &poff, (data.status & TMAG3001_STATUS_OVF) ? 1U : 0U);
+
+        if (BinaryWriter_AppendFrame(out, out_size, off, BINARY_FRAME_TYPE_TMAG,
+                                     (*seq)++, HAL_GetTick(),
+                                     payload, (uint16_t)poff)) {
+            if (frames != NULL) (*frames)++;
+        } else {
+            return 0;
+        }
+
+#if TMAG_GUARD_US > 0
+        tmag_delay_us(TMAG_GUARD_US);
+#endif
+    }
+
+#if TMAG_DESELECT_AFTER_CHANNEL
+    TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+#endif
+    return 1;
+}
+
 // TMAG硬件复位：通过I2C3_RESET线复位TCA Mux和所有TMAG传感器
 static void tmag_hardware_reset(void)
 {
@@ -480,6 +587,34 @@ int Sensor_TMAG3001_ReadAllToCSV(char *out, size_t out_size)
         if (already_read) continue;
 
         if (!tmag_read_channel_to_csv(mask, out, out_size, &off)) {
+            break;
+        }
+    }
+
+    return (int)off;
+}
+
+int Sensor_TMAG3001_ReadAllToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
+                                    uint32_t *frames, uint32_t *skipped,
+                                    uint32_t *errors)
+{
+    size_t off = 0;
+
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        if (!g_tmag_list[i].inited) continue;
+
+        uint8_t mask = g_tmag_list[i].tca_ch_mask;
+        int already_read = 0;
+        for (int j = 0; j < i; j++) {
+            if (g_tmag_list[j].inited && g_tmag_list[j].tca_ch_mask == mask) {
+                already_read = 1;
+                break;
+            }
+        }
+        if (already_read) continue;
+
+        if (!tmag_read_channel_to_binary(mask, out, out_size, &off,
+                                         seq, frames, skipped, errors)) {
             break;
         }
     }
