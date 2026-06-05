@@ -22,6 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
+#include <string.h>
 
 /* USER CODE END INCLUDE */
 
@@ -62,6 +63,7 @@
   */
 
 /* USER CODE BEGIN PRIVATE_DEFINES */
+#define USB_CMD_LINE_MAX 128U
 /* USER CODE END PRIVATE_DEFINES */
 
 /**
@@ -94,6 +96,10 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
+static char g_usb_cmd_line[USB_CMD_LINE_MAX];
+static volatile uint16_t g_usb_cmd_len = 0U;
+static volatile uint8_t g_usb_cmd_ready = 0U;
+static volatile uint8_t g_usb_cmd_drop = 0U;
 
 /* USER CODE END PRIVATE_VARIABLES */
 
@@ -128,6 +134,7 @@ static int8_t CDC_Receive_FS(uint8_t* pbuf, uint32_t *Len);
 static int8_t CDC_TransmitCplt_FS(uint8_t *pbuf, uint32_t *Len, uint8_t epnum);
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_DECLARATION */
+static void CDC_AppendRxByte(uint8_t ch);
 
 /* USER CODE END PRIVATE_FUNCTIONS_DECLARATION */
 
@@ -261,6 +268,10 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  for (uint32_t i = 0; i < *Len; i++)
+  {
+    CDC_AppendRxByte(Buf[i]);
+  }
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
@@ -295,6 +306,76 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
   /* USER CODE END 7 */
   return result;
 }
+
+/* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
+static void CDC_AppendRxByte(uint8_t ch)
+{
+  if (g_usb_cmd_ready != 0U)
+  {
+    return;
+  }
+
+  if (ch == '\r' || ch == '\n')
+  {
+    if (g_usb_cmd_drop != 0U)
+    {
+      memcpy(g_usb_cmd_line, "ERR_OVERFLOW", sizeof("ERR_OVERFLOW"));
+      g_usb_cmd_len = 0U;
+      g_usb_cmd_drop = 0U;
+      g_usb_cmd_ready = 1U;
+      return;
+    }
+    if (g_usb_cmd_len > 0U)
+    {
+      g_usb_cmd_line[g_usb_cmd_len] = '\0';
+      g_usb_cmd_len = 0U;
+      g_usb_cmd_ready = 1U;
+    }
+    return;
+  }
+
+  if (g_usb_cmd_drop != 0U)
+  {
+    return;
+  }
+
+  if (g_usb_cmd_len >= (USB_CMD_LINE_MAX - 1U))
+  {
+    g_usb_cmd_len = 0U;
+    g_usb_cmd_drop = 1U;
+    return;
+  }
+
+  g_usb_cmd_line[g_usb_cmd_len++] = (char)ch;
+}
+
+int USB_CDC_ReadLine(char *out, size_t out_size)
+{
+  if (out == NULL || out_size == 0U || g_usb_cmd_ready == 0U)
+  {
+    return 0;
+  }
+
+  __disable_irq();
+  if (g_usb_cmd_ready == 0U)
+  {
+    __enable_irq();
+    return 0;
+  }
+
+  size_t i = 0U;
+  while (i < (out_size - 1U) && g_usb_cmd_line[i] != '\0')
+  {
+    out[i] = g_usb_cmd_line[i];
+    i++;
+  }
+  out[i] = '\0';
+  g_usb_cmd_line[0] = '\0';
+  g_usb_cmd_ready = 0U;
+  __enable_irq();
+  return 1;
+}
+/* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
 /**
   * @brief  CDC_TransmitCplt_FS

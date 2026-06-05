@@ -11,10 +11,67 @@ make flash
 
 Serial debug output is sent to both USB CDC and USART1 at 115200 baud.
 
+## USB Runtime Control
+
+上电后固件默认进入 `IDLE`，只初始化 MCU 外设和 USB CDC，不主动开始传感器数据流。主机通过 CR/LF 结尾的文本命令选择采集策略和传感器集合，固件返回 `OK ...` 或 `ERR ...`。
+
+支持命令：
+
+```text
+STATUS
+MODE IDLE
+MODE CONT <sensors>
+MODE TRIG <sensors>
+MODE TRIG_AUTO <sensors> <hz>
+RATE <hz>
+TRIG
+```
+
+`<sensors>` 可选：
+
+```text
+AK
+TMAG
+ICM
+AK_TMAG
+AK_ICM
+TMAG_ICM
+ALL
+```
+
+采集策略：
+
+```text
+CONT       连续采集所选传感器
+TRIG       每收到一次 TRIG，触发 AK/TMAG 采一组；ICM 若被选中仍按 data-ready 连续输出
+TRIG_AUTO  固件按 trigger_hz 自动触发 AK/TMAG；ICM 若被选中仍按 data-ready 连续输出
+```
+
+`TRIG_AUTO` 频率范围为 `1..500 Hz`，命令未带频率时默认 `100 Hz`。`RATE <hz>` 只在当前 `TRIG_AUTO` 模式下修改自动触发频率，非法频率返回 `ERR BAD_RATE`。
+
+示例：
+
+```sh
+python3 tools/usb_read.py --cmd "STATUS"
+python3 tools/usb_read.py --strategy cont --sensors AK --duration 5
+python3 tools/usb_read.py --strategy trig --sensors AK_ICM --trigger --duration 5
+python3 tools/usb_read.py --strategy trig-auto --sensors ALL --rate 100 --duration 10
+python3 tools/usb_read.py --cmd "RATE 50" --duration 5
+```
+
+等价的裸 CDC 命令示例：
+
+```text
+MODE TRIG_AUTO ALL 100
+RATE 50
+MODE TRIG AK_ICM
+TRIG
+MODE IDLE
+```
+
 ## Output Formats
 
-The default runtime sensor stream is binary. CSV remains available for debugging
-and rate comparisons:
+The default sensor stream format is binary once a non-IDLE strategy is selected. CSV remains available for debugging and rate comparisons:
 
 ```sh
 make
@@ -26,7 +83,7 @@ Binary frame layout:
 ```text
 sync          u8[2]   0xA5 0x5A
 version       u8      1
-type          u8      1=AK, 2=TMAG, 3=ICM, 0xE0=ERR, 0xF0=STATS
+type          u8      1=AK, 2=TMAG, 3=ICM, 0x11=AK_ARRAY, 0x12=TMAG_ARRAY, 0xE0=ERR, 0xF0=STATS
 seq           u32le
 tick_ms       u32le   HAL_GetTick()
 payload_len   u16le
@@ -40,6 +97,10 @@ Payloads:
 AK    bus u8, mask u8, hx i16, hy i16, hz i16, status u8, err u8, dor u8
 TMAG  ch_mask u8, addr u8, x i16, y i16, z i16, status u8, flags u8
 ICM   ax i16, ay i16, az i16, gx i16, gy i16, gz i16, temp i16
+AK_ARRAY   count u8, bitmap u16le, then count fixed entries:
+           sensor_id u8, bus u8, mask u8, hx i16, hy i16, hz i16, status u8, err u8, dor u8
+TMAG_ARRAY count u8, bitmap u16le, then count fixed entries:
+           sensor_id u8, ch_mask u8, addr u8, x i16, y i16, z i16, status u8, err u8, flags u8
 ERR   source u8, code u16, detail u32
 STATS ak_frames u32, tmag_frames u32, icm_frames u32, skipped u32, errors u32
 ```

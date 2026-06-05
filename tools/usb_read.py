@@ -22,6 +22,8 @@ TYPE_NAMES = {
     0xF0: "STATS",
 }
 
+SENSOR_CHOICES = ["AK", "TMAG", "ICM", "AK_TMAG", "AK_ICM", "TMAG_ICM", "ALL"]
+
 
 def find_port():
     ports = list(serial.tools.list_ports.comports())
@@ -173,6 +175,44 @@ def read_raw(ser, duration):
     return bytes(raw), time.time() - start
 
 
+def build_commands(args):
+    commands = []
+
+    if args.cmd:
+        commands.extend(args.cmd)
+
+    if args.strategy:
+        strategy = args.strategy.replace("-", "_").upper()
+        if strategy == "IDLE":
+            commands.append("MODE IDLE")
+        elif strategy == "TRIG_AUTO":
+            rate = args.rate if args.rate is not None else 100
+            commands.append(f"MODE TRIG_AUTO {args.sensors} {rate}")
+        else:
+            commands.append(f"MODE {strategy} {args.sensors}")
+
+    if args.rate is not None and not (args.strategy and args.strategy == "trig-auto"):
+        commands.append(f"RATE {args.rate}")
+
+    if args.trigger:
+        if args.strategy == "trig" and not any(cmd.upper().startswith("MODE TRIG ") for cmd in commands):
+            commands.append(f"MODE TRIG {args.sensors}")
+        commands.append("TRIG")
+
+    return commands
+
+
+def send_commands(ser, commands):
+    for command in commands:
+        line = command.strip()
+        if not line:
+            continue
+        print(f"> {line}")
+        ser.write((line + "\r\n").encode("ascii"))
+        ser.flush()
+        time.sleep(0.05)
+
+
 def analyze_binary(raw, elapsed):
     frames, crc_errors, dropped = parse_binary_frames(raw)
     counts = {}
@@ -274,6 +314,11 @@ def main():
     parser.add_argument("--format", choices=["auto", "csv", "binary"], default="auto")
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--port")
+    parser.add_argument("--cmd", action="append", help="send a raw USB command, e.g. --cmd 'STATUS'")
+    parser.add_argument("--strategy", choices=["idle", "cont", "trig", "trig-auto"])
+    parser.add_argument("--sensors", choices=SENSOR_CHOICES, default="ALL")
+    parser.add_argument("--rate", type=int, help="TRIG_AUTO/RATE frequency in Hz")
+    parser.add_argument("--trigger", action="store_true", help="send one TRIG command after setup")
     args = parser.parse_args()
 
     port = args.port or find_port()
@@ -285,6 +330,10 @@ def main():
     try:
         ser = serial.Serial(port, 115200, timeout=0.05)
         ser.reset_input_buffer()
+        commands = build_commands(args)
+        if commands:
+            send_commands(ser, commands)
+            time.sleep(0.2)
         print(f"读取 {args.duration:.1f} 秒数据...\n")
         raw, elapsed = read_raw(ser, args.duration)
         ser.close()

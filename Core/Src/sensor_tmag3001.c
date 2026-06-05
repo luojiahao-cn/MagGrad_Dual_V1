@@ -128,6 +128,9 @@ static inline void tmag_i2c3_pins_af_od(void)
 #ifndef TMAG_DESELECT_AFTER_CHANNEL
 #define TMAG_DESELECT_AFTER_CHANNEL 0
 #endif
+#ifndef TMAG_TRIGGER_WAIT_US
+#define TMAG_TRIGGER_WAIT_US 200
+#endif
 
 static void tmag_send_scl_pulses_and_stop(int n_pulses)
 {
@@ -551,6 +554,81 @@ void Sensor_TMAG3001_Init_All(void)
 
     printf("TMAG: init done\r\n");
     fflush(stdout);
+}
+
+static HAL_StatusTypeDef tmag_configure_all_mode(uint8_t dev_cfg2)
+{
+    HAL_StatusTypeDef result = HAL_OK;
+
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        TMAG3001_Instance_t *inst = &g_tmag_list[i];
+        if (!inst->inited) {
+            continue;
+        }
+
+        if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+            tmag_i2c_recover();
+        }
+        HAL_StatusTypeDef status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, inst->tca_ch_mask);
+        if (status != HAL_OK) {
+            tmag_i2c_recover();
+            result = status;
+            continue;
+        }
+
+        status = TMAG3001_SetMode(&inst->dev, dev_cfg2);
+        if (status != HAL_OK) {
+            result = status;
+        }
+    }
+
+    TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+    return result;
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousMode_All(void)
+{
+    return tmag_configure_all_mode(TMAG3001_DEV_CFG2_CONTINUOUS);
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerMode_All(void)
+{
+    return tmag_configure_all_mode(TMAG3001_DEV_CFG2_STANDBY);
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_TriggerSingle_All(void)
+{
+    uint8_t target_mask = 0U;
+    uint8_t ctrl = 0x80U | TMAG3001_REG_X_MSB;
+
+    for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+        if (g_tmag_list[i].inited) {
+            target_mask |= g_tmag_list[i].tca_ch_mask;
+        }
+    }
+
+    if (target_mask == 0U) {
+        return HAL_ERROR;
+    }
+
+    if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+        tmag_i2c_recover();
+    }
+
+    HAL_StatusTypeDef status = TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, target_mask);
+    if (status != HAL_OK) {
+        tmag_i2c_recover();
+        return status;
+    }
+
+    status = HAL_I2C_Master_Transmit(&hi2c3, 0x00U, &ctrl, 1U, 5U);
+    if (status != HAL_OK) {
+        tmag_i2c_recover();
+        return status;
+    }
+
+    tmag_delay_us(TMAG_TRIGGER_WAIT_US);
+    return HAL_OK;
 }
 
 int Sensor_TMAG3001_ReadToCSV(uint8_t tca_ch_mask, char *out_line, size_t out_size)

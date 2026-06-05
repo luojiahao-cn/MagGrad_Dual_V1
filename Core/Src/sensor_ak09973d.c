@@ -460,6 +460,71 @@ int Sensor_AK09973D_ReadArrayToBinary(uint8_t *out, size_t out_size,
     return (int)off;
 }
 
+HAL_StatusTypeDef Sensor_AK09973D_SetContinuousMode_All(void)
+{
+    HAL_StatusTypeDef result = HAL_OK;
+
+    for (int i = 0; i < g_valid_count; i++) {
+        HAL_StatusTypeDef status = ak_select_channel(g_valid[i].i2c_bus, g_valid[i].mask);
+        if (status != HAL_OK) {
+            result = status;
+            continue;
+        }
+
+        status = AK09973D_SetMode(&g_valid[i].dev, AK09973D_ACTIVE_CNTL2);
+        if (status != HAL_OK) {
+            result = status;
+        }
+    }
+
+    TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
+    TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, 0);
+    return result;
+}
+
+HAL_StatusTypeDef Sensor_AK09973D_TriggerSingle_All(void)
+{
+    uint8_t bus_mask[3] = {0U, 0U, 0U};
+    uint8_t bus_addr[3] = {0U, 0U, 0U};
+    HAL_StatusTypeDef result = HAL_OK;
+
+    for (int i = 0; i < g_valid_count; i++) {
+        uint8_t bus = g_valid[i].i2c_bus;
+        if (bus < 1U || bus > 2U) {
+            continue;
+        }
+        bus_mask[bus] |= g_valid[i].mask;
+        bus_addr[bus] = g_valid[i].dev.addr7;
+    }
+
+    for (uint8_t bus = 1U; bus <= 2U; bus++) {
+        if (bus_mask[bus] == 0U) {
+            continue;
+        }
+
+        I2C_HandleTypeDef *hi2c = get_i2c(bus);
+        HAL_StatusTypeDef status = ak_select_channel(bus, bus_mask[bus]);
+        if (status != HAL_OK) {
+            result = status;
+            continue;
+        }
+
+        ak09973d_t dev = {
+            .hi2c = hi2c,
+            .addr7 = bus_addr[bus]
+        };
+        status = AK09973D_SetMode(&dev, AK09973D_MODE_SINGLE);
+        if (status != HAL_OK) {
+            result = status;
+        }
+    }
+
+    HAL_Delay(1);
+    TCA9548_Select(&hi2c1, AK09973D_TCA_ADDR_7B, 0);
+    TCA9548_Select(&hi2c2, AK09973D_TCA_ADDR_7B, 0);
+    return result;
+}
+
 void Sensor_AK09973D_ReadAll(void)
 {
     char frame[1024];

@@ -24,5 +24,7 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
 int Sensor_AK09973D_ReadArrayToBinary(uint8_t *out, size_t out_size,
                                       uint32_t *seq, uint32_t *frames,
                                       uint32_t *skipped, uint32_t *errors);
+HAL_StatusTypeDef Sensor_AK09973D_SetContinuousMode_All(void);
+HAL_StatusTypeDef Sensor_AK09973D_TriggerSingle_All(void);
 void Sensor_AK09973D_ReadAll(void);
 int Sensor_AK09973D_GetCount(void);

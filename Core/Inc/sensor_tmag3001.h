@@ -29,5 +29,8 @@ int Sensor_TMAG3001_ReadAllToBinary(uint8_t *out, size_t out_size, uint32_t *seq
 int Sensor_TMAG3001_ReadArrayToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
                                       uint32_t *frames, uint32_t *skipped,
                                       uint32_t *errors);
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousMode_All(void);
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerMode_All(void);
+HAL_StatusTypeDef Sensor_TMAG3001_TriggerSingle_All(void);
 void Sensor_TMAG3001_ReadAll(void);
 int Sensor_TMAG3001_GetCount(void);

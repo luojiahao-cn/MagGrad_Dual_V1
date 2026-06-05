@@ -33,6 +33,7 @@
 #include "binary_writer.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "usbd_cdc_if.h"
 #include "usbd_cdc.h"
 /* USER CODE END Includes */
@@ -79,7 +80,7 @@ static void MPU_Config(void);
 #define SENSOR_OUTPUT_AK    1
 #endif
 #ifndef SENSOR_OUTPUT_TMAG
-#define SENSOR_OUTPUT_TMAG  0
+#define SENSOR_OUTPUT_TMAG  1
 #endif
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
@@ -87,6 +88,48 @@ static void MPU_Config(void);
 #ifndef AK_ARRAY_OUTPUT_HZ
 #define AK_ARRAY_OUTPUT_HZ 480U
 #endif
+#define TRIG_AUTO_DEFAULT_HZ 100U
+#define TRIG_AUTO_MIN_HZ 1U
+#define TRIG_AUTO_MAX_HZ 500U
+
+typedef enum {
+    RT_STRATEGY_IDLE = 0,
+    RT_STRATEGY_CONT,
+    RT_STRATEGY_TRIG,
+    RT_STRATEGY_TRIG_AUTO
+} runtime_strategy_t;
+
+#define RT_SENSOR_AK   0x01U
+#define RT_SENSOR_TMAG 0x02U
+#define RT_SENSOR_ICM  0x04U
+#define RT_SENSOR_MAG  (RT_SENSOR_AK | RT_SENSOR_TMAG)
+#define RT_SENSOR_ALL  (RT_SENSOR_AK | RT_SENSOR_TMAG | RT_SENSOR_ICM)
+
+typedef struct {
+    runtime_strategy_t strategy;
+    uint8_t sensor_mask;
+    uint32_t trigger_hz;
+    uint32_t next_trigger_cycle;
+    uint32_t next_ak_cycle;
+    uint8_t manual_trigger_pending;
+    uint8_t ak_initialized;
+    uint8_t tmag_initialized;
+    uint8_t icm_initialized;
+} runtime_state_t;
+
+static runtime_state_t g_rt = {
+    .strategy = RT_STRATEGY_IDLE,
+    .sensor_mask = 0U,
+    .trigger_hz = TRIG_AUTO_DEFAULT_HZ
+};
+
+static uint32_t g_binary_seq = 0U;
+static uint32_t g_ak_frames = 0U;
+static uint32_t g_tmag_frames = 0U;
+static uint32_t g_icm_frames = 0U;
+static uint32_t g_skipped = 0U;
+static uint32_t g_errors = 0U;
+static uint32_t g_last_stats_ms = 0U;
 
 // USB CDC发送字符串
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -189,6 +232,412 @@ int _write(int file, char *ptr, int len)
     return len;
 }
 
+static const char *Runtime_StrategyName(runtime_strategy_t strategy)
+{
+    switch (strategy) {
+    case RT_STRATEGY_IDLE:
+        return "IDLE";
+    case RT_STRATEGY_CONT:
+        return "CONT";
+    case RT_STRATEGY_TRIG:
+        return "TRIG";
+    case RT_STRATEGY_TRIG_AUTO:
+        return "TRIG_AUTO";
+    default:
+        return "?";
+    }
+}
+
+static const char *Runtime_SensorName(uint8_t mask)
+{
+    switch (mask) {
+    case RT_SENSOR_AK:
+        return "AK";
+    case RT_SENSOR_TMAG:
+        return "TMAG";
+    case RT_SENSOR_ICM:
+        return "ICM";
+    case RT_SENSOR_AK | RT_SENSOR_TMAG:
+        return "AK_TMAG";
+    case RT_SENSOR_AK | RT_SENSOR_ICM:
+        return "AK_ICM";
+    case RT_SENSOR_TMAG | RT_SENSOR_ICM:
+        return "TMAG_ICM";
+    case RT_SENSOR_ALL:
+        return "ALL";
+    case 0U:
+        return "NONE";
+    default:
+        return "CUSTOM";
+    }
+}
+
+static void Runtime_SendLine(const char *line)
+{
+    char out[256];
+    int n = snprintf(out, sizeof(out), "%s\r\n", line);
+    if (n > 0) {
+        USB_Send_String(out);
+    }
+}
+
+static void Runtime_Uppercase(char *s)
+{
+    while (*s != '\0') {
+        if (*s >= 'a' && *s <= 'z') {
+            *s = (char)(*s - ('a' - 'A'));
+        }
+        s++;
+    }
+}
+
+static int Runtime_ParseSensors(const char *s, uint8_t *mask)
+{
+    if (strcmp(s, "AK") == 0) {
+        *mask = RT_SENSOR_AK;
+    } else if (strcmp(s, "TMAG") == 0) {
+        *mask = RT_SENSOR_TMAG;
+    } else if (strcmp(s, "ICM") == 0) {
+        *mask = RT_SENSOR_ICM;
+    } else if (strcmp(s, "AK_TMAG") == 0) {
+        *mask = RT_SENSOR_AK | RT_SENSOR_TMAG;
+    } else if (strcmp(s, "AK_ICM") == 0) {
+        *mask = RT_SENSOR_AK | RT_SENSOR_ICM;
+    } else if (strcmp(s, "TMAG_ICM") == 0) {
+        *mask = RT_SENSOR_TMAG | RT_SENSOR_ICM;
+    } else if (strcmp(s, "ALL") == 0) {
+        *mask = RT_SENSOR_ALL;
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+static int Runtime_ParseHz(const char *s, uint32_t *hz)
+{
+    char *end = NULL;
+    unsigned long v = strtoul(s, &end, 10);
+
+    if (s == end || end == NULL || *end != '\0' ||
+        v < TRIG_AUTO_MIN_HZ || v > TRIG_AUTO_MAX_HZ) {
+        return 0;
+    }
+
+    *hz = (uint32_t)v;
+    return 1;
+}
+
+static int Runtime_EnsureSensors(uint8_t sensor_mask, runtime_strategy_t strategy)
+{
+    int ok = 1;
+
+    if ((sensor_mask & RT_SENSOR_ICM) != 0U && g_rt.icm_initialized == 0U) {
+#if SENSOR_OUTPUT_ICM
+        if (ICM42670_Init(&icm) == HAL_OK) {
+            g_rt.icm_initialized = 1U;
+        } else {
+            ok = 0;
+        }
+#else
+        ok = 0;
+#endif
+    }
+
+    if ((sensor_mask & RT_SENSOR_AK) != 0U && g_rt.ak_initialized == 0U) {
+#if SENSOR_OUTPUT_AK
+        Sensor_AK09973D_Init_All();
+        if (Sensor_AK09973D_GetCount() > 0) {
+            g_rt.ak_initialized = 1U;
+        } else {
+            ok = 0;
+        }
+#else
+        ok = 0;
+#endif
+    }
+
+    if ((sensor_mask & RT_SENSOR_TMAG) != 0U && g_rt.tmag_initialized == 0U) {
+#if SENSOR_OUTPUT_TMAG
+        Sensor_TMAG3001_Init_All();
+        if (Sensor_TMAG3001_GetCount() > 0) {
+            g_rt.tmag_initialized = 1U;
+        } else {
+            ok = 0;
+        }
+#else
+        ok = 0;
+#endif
+    }
+
+#if SENSOR_OUTPUT_AK
+    if (ok != 0 && (sensor_mask & RT_SENSOR_AK) != 0U && strategy == RT_STRATEGY_CONT) {
+        if (Sensor_AK09973D_SetContinuousMode_All() != HAL_OK) {
+            ok = 0;
+        }
+    }
+#endif
+
+#if SENSOR_OUTPUT_TMAG
+    if (ok != 0 && (sensor_mask & RT_SENSOR_TMAG) != 0U) {
+        HAL_StatusTypeDef status;
+        if (strategy == RT_STRATEGY_TRIG || strategy == RT_STRATEGY_TRIG_AUTO) {
+            status = Sensor_TMAG3001_SetTriggerMode_All();
+        } else {
+            status = Sensor_TMAG3001_SetContinuousMode_All();
+        }
+        if (status != HAL_OK) {
+            ok = 0;
+        }
+    }
+#endif
+
+    return ok;
+}
+
+static void Runtime_SendStatus(void)
+{
+    char line[256];
+    snprintf(line, sizeof(line),
+             "OK STATUS strategy=%s sensors=%s mask=0x%02X trigger_hz=%lu init=AK:%u,TMAG:%u,ICM:%u frames=AK:%lu,TMAG:%lu,ICM:%lu skipped=%lu errors=%lu",
+             Runtime_StrategyName(g_rt.strategy),
+             Runtime_SensorName(g_rt.sensor_mask),
+             g_rt.sensor_mask,
+             (unsigned long)g_rt.trigger_hz,
+             g_rt.ak_initialized,
+             g_rt.tmag_initialized,
+             g_rt.icm_initialized,
+             (unsigned long)g_ak_frames,
+             (unsigned long)g_tmag_frames,
+             (unsigned long)g_icm_frames,
+             (unsigned long)g_skipped,
+             (unsigned long)g_errors);
+    Runtime_SendLine(line);
+}
+
+static void Runtime_SetIdle(void)
+{
+    g_rt.strategy = RT_STRATEGY_IDLE;
+    g_rt.sensor_mask = 0U;
+    g_rt.manual_trigger_pending = 0U;
+    g_rt.next_trigger_cycle = 0U;
+    g_rt.next_ak_cycle = 0U;
+}
+
+static void Runtime_SetMode(runtime_strategy_t strategy, uint8_t sensor_mask, uint32_t hz)
+{
+    g_rt.strategy = strategy;
+    g_rt.sensor_mask = sensor_mask;
+    g_rt.trigger_hz = hz;
+    g_rt.manual_trigger_pending = 0U;
+    g_rt.next_trigger_cycle = 0U;
+    g_rt.next_ak_cycle = 0U;
+}
+
+static void Runtime_HandleCommand(char *line)
+{
+    char *tok[5] = {0};
+    int ntok = 0;
+
+    Runtime_Uppercase(line);
+    if (strcmp(line, "ERR_OVERFLOW") == 0) {
+        Runtime_SendLine("ERR LINE_OVERFLOW");
+        return;
+    }
+
+    for (char *p = strtok(line, " \t");
+         p != NULL && ntok < (int)(sizeof(tok) / sizeof(tok[0]));
+         p = strtok(NULL, " \t")) {
+        tok[ntok++] = p;
+    }
+
+    if (ntok == 0) {
+        return;
+    }
+
+    if (strcmp(tok[0], "STATUS") == 0) {
+        Runtime_SendStatus();
+        return;
+    }
+
+    if (strcmp(tok[0], "MODE") == 0) {
+        runtime_strategy_t strategy;
+        uint8_t sensor_mask = 0U;
+        uint32_t hz = g_rt.trigger_hz;
+
+        if (ntok >= 2 && strcmp(tok[1], "IDLE") == 0) {
+            Runtime_SetIdle();
+            Runtime_SendLine("OK MODE IDLE");
+            return;
+        }
+        if (ntok < 3) {
+            Runtime_SendLine("ERR BAD_MODE");
+            return;
+        }
+
+        if (strcmp(tok[1], "CONT") == 0) {
+            strategy = RT_STRATEGY_CONT;
+        } else if (strcmp(tok[1], "TRIG") == 0) {
+            strategy = RT_STRATEGY_TRIG;
+        } else if (strcmp(tok[1], "TRIG_AUTO") == 0) {
+            strategy = RT_STRATEGY_TRIG_AUTO;
+            hz = TRIG_AUTO_DEFAULT_HZ;
+        } else {
+            Runtime_SendLine("ERR BAD_MODE");
+            return;
+        }
+
+        if (!Runtime_ParseSensors(tok[2], &sensor_mask)) {
+            Runtime_SendLine("ERR BAD_SENSOR");
+            return;
+        }
+
+        if (strategy == RT_STRATEGY_TRIG_AUTO && ntok >= 4) {
+            if (!Runtime_ParseHz(tok[3], &hz)) {
+                Runtime_SendLine("ERR BAD_RATE");
+                return;
+            }
+        }
+
+        if (!Runtime_EnsureSensors(sensor_mask, strategy)) {
+            Runtime_SendLine("ERR INIT");
+            return;
+        }
+
+        Runtime_SetMode(strategy, sensor_mask, hz);
+        char out[96];
+        snprintf(out, sizeof(out), "OK MODE %s %s %lu",
+                 Runtime_StrategyName(strategy),
+                 Runtime_SensorName(sensor_mask),
+                 (unsigned long)g_rt.trigger_hz);
+        Runtime_SendLine(out);
+        return;
+    }
+
+    if (strcmp(tok[0], "RATE") == 0) {
+        uint32_t hz;
+        if (ntok < 2 || !Runtime_ParseHz(tok[1], &hz)) {
+            Runtime_SendLine("ERR BAD_RATE");
+            return;
+        }
+        if (g_rt.strategy != RT_STRATEGY_TRIG_AUTO) {
+            Runtime_SendLine("ERR BAD_MODE");
+            return;
+        }
+        g_rt.trigger_hz = hz;
+        g_rt.next_trigger_cycle = 0U;
+        char out[48];
+        snprintf(out, sizeof(out), "OK RATE %lu", (unsigned long)hz);
+        Runtime_SendLine(out);
+        return;
+    }
+
+    if (strcmp(tok[0], "TRIG") == 0) {
+        if (g_rt.strategy != RT_STRATEGY_TRIG && g_rt.strategy != RT_STRATEGY_TRIG_AUTO) {
+            Runtime_SendLine("ERR BAD_MODE");
+            return;
+        }
+        if ((g_rt.sensor_mask & RT_SENSOR_MAG) == 0U) {
+            Runtime_SendLine("OK NO_MAG_SENSOR");
+            return;
+        }
+        g_rt.manual_trigger_pending = 1U;
+        Runtime_SendLine("OK TRIG");
+        return;
+    }
+
+    Runtime_SendLine("ERR UNKNOWN");
+}
+
+static void Runtime_ProcessCommands(void)
+{
+    char line[128];
+    while (USB_CDC_ReadLine(line, sizeof(line)) != 0) {
+        Runtime_HandleCommand(line);
+    }
+}
+
+static void Runtime_ReadICM(uint8_t *binary_frame, size_t binary_frame_size)
+{
+#if SENSOR_OUTPUT_ICM
+    int n = ICM42670_ReadToBinary(&icm, binary_frame, binary_frame_size,
+                                  &g_binary_seq, &g_icm_frames, &g_skipped, &g_errors);
+    if (n > 0) {
+        USB_Send_Raw(binary_frame, (uint16_t)n);
+    }
+#else
+    (void)binary_frame;
+    (void)binary_frame_size;
+#endif
+}
+
+static void Runtime_ReadAKArray(uint8_t *binary_frame, size_t binary_frame_size)
+{
+#if SENSOR_OUTPUT_AK
+    int n = Sensor_AK09973D_ReadArrayToBinary(binary_frame, binary_frame_size,
+                                              &g_binary_seq, &g_ak_frames,
+                                              &g_skipped, &g_errors);
+    if (n > 0) {
+        USB_Send_Raw(binary_frame, (uint16_t)n);
+    }
+#else
+    (void)binary_frame;
+    (void)binary_frame_size;
+#endif
+}
+
+static void Runtime_ReadTMAGArray(uint8_t *binary_frame, size_t binary_frame_size)
+{
+#if SENSOR_OUTPUT_TMAG
+    int n = Sensor_TMAG3001_ReadArrayToBinary(binary_frame, binary_frame_size,
+                                              &g_binary_seq, &g_tmag_frames,
+                                              &g_skipped, &g_errors);
+    if (n > 0) {
+        USB_Send_Raw(binary_frame, (uint16_t)n);
+    }
+#else
+    (void)binary_frame;
+    (void)binary_frame_size;
+#endif
+}
+
+static void Runtime_TriggerMagAndRead(uint8_t *binary_frame, size_t binary_frame_size)
+{
+    if ((g_rt.sensor_mask & RT_SENSOR_AK) != 0U) {
+#if SENSOR_OUTPUT_AK
+        if (Sensor_AK09973D_TriggerSingle_All() != HAL_OK) {
+            g_errors++;
+        }
+        Runtime_ReadAKArray(binary_frame, binary_frame_size);
+#endif
+    }
+
+    if ((g_rt.sensor_mask & RT_SENSOR_TMAG) != 0U) {
+#if SENSOR_OUTPUT_TMAG
+        if (Sensor_TMAG3001_TriggerSingle_All() != HAL_OK) {
+            g_errors++;
+        }
+        Runtime_ReadTMAGArray(binary_frame, binary_frame_size);
+#endif
+    }
+}
+
+static void Runtime_SendStatsIfDue(uint8_t *binary_frame, size_t binary_frame_size)
+{
+    uint32_t now = HAL_GetTick();
+    if (g_rt.strategy == RT_STRATEGY_IDLE || (now - g_last_stats_ms) < 1000U) {
+        return;
+    }
+
+    size_t off = 0;
+    if (BinaryWriter_AppendStats(binary_frame, binary_frame_size, &off,
+                                 g_binary_seq++, now,
+                                 g_ak_frames, g_tmag_frames, g_icm_frames,
+                                 g_skipped, g_errors)) {
+        USB_Send_Raw(binary_frame, (uint16_t)off);
+    }
+    g_last_stats_ms = now;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -241,47 +690,9 @@ int main(void)
   HAL_Delay(100);
   HAL_Delay(2000);  // 等待 USB CDC 准备好
 
-  printf("=== MAG READ START ===\r\n");
-
-  if (ICM42670_Init(&icm) != HAL_OK)
-  {
-      printf("ICM init FAILED\r\n");
-      HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_RESET);
-  }
-  else
-  {
-      printf("ICM init OK (WHO=0x67)\r\n");
-  }
-
-  int ak_count = 0;
-  int tmag_count = 0;
-  for (int attempt = 1; attempt <= 5; attempt++) {
-      printf("MAG init attempt %d\r\n", attempt);
-#if SENSOR_OUTPUT_AK
-      Sensor_AK09973D_Init_All();
-#endif
-#if SENSOR_OUTPUT_TMAG
-      Sensor_TMAG3001_Init_All();
-#endif
-
-#if SENSOR_OUTPUT_AK
-      ak_count = Sensor_AK09973D_GetCount();
-#else
-      ak_count = AK09973D_COUNT;
-#endif
-#if SENSOR_OUTPUT_TMAG
-      tmag_count = Sensor_TMAG3001_GetCount();
-#else
-      tmag_count = TMAG3001_TOTAL_NUM;
-#endif
-      printf("MAG init count AK=%d/%d TMAG=%d/%d\r\n",
-             ak_count, AK09973D_COUNT, tmag_count, TMAG3001_TOTAL_NUM);
-
-      if (ak_count == AK09973D_COUNT && tmag_count == TMAG3001_TOTAL_NUM) {
-          break;
-      }
-      HAL_Delay(500);
-  }
+  Runtime_SetIdle();
+  printf("=== MAG READY IDLE ===\r\n");
+  Runtime_SendLine("OK BOOT IDLE");
 
   /* USER CODE END 2 */
 
@@ -294,93 +705,39 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
 	    static uint8_t binary_frame[4096];
-	    static char frame[3072];
-	    int n = 0;
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
-        static uint32_t binary_seq = 0;
-        static uint32_t ak_frames = 0;
-        static uint32_t tmag_frames = 0;
-        static uint32_t icm_frames = 0;
-        static uint32_t skipped = 0;
-        static uint32_t errors = 0;
-        static uint32_t last_stats_ms = 0;
-        static uint32_t next_ak_cycle = 0;
+    Runtime_ProcessCommands();
 
-#if SENSOR_OUTPUT_ICM
-	    n = ICM42670_ReadToBinary(&icm, binary_frame, sizeof(binary_frame),
-                                  &binary_seq, &icm_frames, &skipped, &errors);
-	    if (n > 0) {
-	        USB_Send_Raw(binary_frame, (uint16_t)n);
-	    }
-#endif
+    if (g_rt.strategy != RT_STRATEGY_IDLE && (g_rt.sensor_mask & RT_SENSOR_ICM) != 0U) {
+        Runtime_ReadICM(binary_frame, sizeof(binary_frame));
+    }
 
-#if SENSOR_OUTPUT_AK
-    if (Main_DWT_Due(&next_ak_cycle, SystemCoreClock / AK_ARRAY_OUTPUT_HZ)) {
-        n = Sensor_AK09973D_ReadArrayToBinary(binary_frame, sizeof(binary_frame),
-                                              &binary_seq, &ak_frames, &skipped, &errors);
-        if (n > 0) {
-            USB_Send_Raw(binary_frame, (uint16_t)n);
+    if (g_rt.strategy == RT_STRATEGY_CONT) {
+        if ((g_rt.sensor_mask & RT_SENSOR_AK) != 0U &&
+            Main_DWT_Due(&g_rt.next_ak_cycle, SystemCoreClock / AK_ARRAY_OUTPUT_HZ)) {
+            Runtime_ReadAKArray(binary_frame, sizeof(binary_frame));
+        }
+        if ((g_rt.sensor_mask & RT_SENSOR_TMAG) != 0U) {
+            Runtime_ReadTMAGArray(binary_frame, sizeof(binary_frame));
+        }
+    } else if (g_rt.strategy == RT_STRATEGY_TRIG) {
+        if (g_rt.manual_trigger_pending != 0U) {
+            g_rt.manual_trigger_pending = 0U;
+            Runtime_TriggerMagAndRead(binary_frame, sizeof(binary_frame));
+        }
+    } else if (g_rt.strategy == RT_STRATEGY_TRIG_AUTO) {
+        uint32_t period_cycles = SystemCoreClock / g_rt.trigger_hz;
+        if (g_rt.manual_trigger_pending != 0U ||
+            Main_DWT_Due(&g_rt.next_trigger_cycle, period_cycles)) {
+            g_rt.manual_trigger_pending = 0U;
+            Runtime_TriggerMagAndRead(binary_frame, sizeof(binary_frame));
         }
     }
-#endif
 
-#if SENSOR_OUTPUT_TMAG
-    {
-        n = Sensor_TMAG3001_ReadArrayToBinary(binary_frame, sizeof(binary_frame),
-                                              &binary_seq, &tmag_frames,
-                                              &skipped, &errors);
-
-        if (n > 0) {
-            USB_Send_Raw(binary_frame, (uint16_t)n);
-        }
-    }
-#endif
-
-    uint32_t now = HAL_GetTick();
-    if ((now - last_stats_ms) >= 1000U) {
-        size_t off = 0;
-        if (BinaryWriter_AppendStats(binary_frame, sizeof(binary_frame), &off,
-                                     binary_seq++, now,
-                                     ak_frames, tmag_frames, icm_frames,
-                                     skipped, errors)) {
-            USB_Send_Raw(binary_frame, (uint16_t)off);
-        }
-        last_stats_ms = now;
-    }
+    Runtime_SendStatsIfDue(binary_frame, sizeof(binary_frame));
 
 #else
-#if SENSOR_OUTPUT_ICM
-	    n = ICM42670_ReadToCSV(&icm, frame, sizeof(frame));
-	    if (n > 0) {
-            if (n < (int)sizeof(frame)) {
-	            frame[n] = '\0';
-	            USB_Send_String(frame);
-            }
-	    }
-#endif
-
-#if SENSOR_OUTPUT_AK
-    n = Sensor_AK09973D_ReadToCSV(frame, sizeof(frame));
-    if (n > 0) {
-        if (n < (int)sizeof(frame)) {
-            frame[n] = '\0';
-            USB_Send_String(frame);
-        }
-    }
-#endif
-
-#if SENSOR_OUTPUT_TMAG
-    {
-        n = Sensor_TMAG3001_ReadAllToCSV(frame, sizeof(frame));
-
-        if (n > 0) {
-            if (n < (int)sizeof(frame)) {
-                frame[n] = '\0';
-                USB_Send_String(frame);
-            }
-        }
-    }
-#endif
+    Runtime_ProcessCommands();
 #endif
 
     // LED 状态指示
