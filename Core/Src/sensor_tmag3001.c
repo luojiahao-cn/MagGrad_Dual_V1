@@ -622,6 +622,136 @@ int Sensor_TMAG3001_ReadAllToBinary(uint8_t *out, size_t out_size, uint32_t *seq
     return (int)off;
 }
 
+int Sensor_TMAG3001_ReadArrayToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
+                                      uint32_t *frames, uint32_t *skipped,
+                                      uint32_t *errors)
+{
+    uint8_t payload[1U + 2U + TMAG3001_TOTAL_NUM * 12U];
+    size_t poff = 3U;
+    uint16_t bitmap = 0U;
+    uint8_t sensor_id = 1U;
+
+    static const uint8_t ch_order[TMAG3001_CHANNELS] = {1U, 2U, 3U, 4U};
+
+    for (int ci = 0; ci < TMAG3001_CHANNELS; ci++) {
+        uint8_t ch_mask = (uint8_t)(1U << ch_order[ci]);
+        int tca_ok = 1;
+
+        if ((TMAG3001_ACTIVE_TCA_MASK & ch_mask) == 0U) {
+            tca_ok = 0;
+        } else {
+            if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+                tmag_i2c_recover();
+            }
+            if (TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, ch_mask) != HAL_OK) {
+                tmag_i2c_recover();
+                if (errors != NULL) (*errors)++;
+                tca_ok = 0;
+            } else {
+#if TMAG_RECOVERY_SCL_PULSES > 0
+                tmag_recover_sensor_on_channel(ch_mask);
+#endif
+            }
+        }
+
+        for (int ai = 0; ai < TMAG3001_PER_CHANNEL; ai++, sensor_id++) {
+            uint8_t addr = g_tmag_addrs[ai];
+            TMAG3001_Instance_t *inst = NULL;
+            tmag3001_data_t data = {0};
+            uint8_t status = 0U;
+            uint8_t err = 0U;
+            uint8_t flags = 0U;
+
+            for (int i = 0; i < TMAG3001_TOTAL_NUM; i++) {
+                if (g_tmag_list[i].inited &&
+                    g_tmag_list[i].tca_ch_mask == ch_mask &&
+                    g_tmag_list[i].addr7 == addr) {
+                    inst = &g_tmag_list[i];
+                    break;
+                }
+            }
+
+            if (inst == NULL) {
+                if (errors != NULL) (*errors)++;
+                err = 3U;
+            } else if (!tca_ok) {
+                err = 1U;
+            } else {
+                int n_pulses = (addr == TMAG3001_ADDR_A2_SDA) ? TMAG_PULSE_SDA : TMAG_PULSE_NORMAL;
+#if TMAG_SKIP_GND_SENSOR_PULSE
+                if (addr == TMAG3001_ADDR_A2_GND) {
+                    n_pulses = 0;
+                }
+#endif
+                if (n_pulses > 0) {
+                    tmag_send_scl_pulses_and_stop(n_pulses);
+#if TMAG_RESELECT_AFTER_SENSOR_PULSE
+                    TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, ch_mask);
+#endif
+                }
+
+                HAL_StatusTypeDef read_status = HAL_ERROR;
+                for (int retry = 0; retry < 2; retry++) {
+                    read_status = TMAG3001_ReadData(&inst->dev, &data);
+                    if (read_status == HAL_OK) {
+                        break;
+                    }
+                    tmag_i2c_recover();
+                    TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, ch_mask);
+                    if (__HAL_I2C_GET_FLAG(&hi2c3, I2C_FLAG_BUSY)) {
+                        tmag_recover_sensor_on_channel(ch_mask);
+                    }
+                }
+
+                if (read_status != HAL_OK) {
+                    if (errors != NULL) (*errors)++;
+                    (void)HAL_I2C_GetError(&hi2c3);
+                    err = 2U;
+                } else {
+                    status = (data.status & TMAG3001_STATUS_DRDY) ? 1U : 0U;
+                    flags = (data.status & TMAG3001_STATUS_OVF) ? 1U : 0U;
+                    if (status != 0U) {
+                        bitmap |= (uint16_t)(1U << (sensor_id - 1U));
+                    } else if (skipped != NULL) {
+                        (*skipped)++;
+                    }
+                }
+
+#if TMAG_GUARD_US > 0
+                tmag_delay_us(TMAG_GUARD_US);
+#endif
+            }
+
+            BinaryWriter_PutU8(payload, &poff, sensor_id);
+            BinaryWriter_PutU8(payload, &poff, ch_mask);
+            BinaryWriter_PutU8(payload, &poff, addr);
+            BinaryWriter_PutI16(payload, &poff, data.x);
+            BinaryWriter_PutI16(payload, &poff, data.y);
+            BinaryWriter_PutI16(payload, &poff, data.z);
+            BinaryWriter_PutU8(payload, &poff, status);
+            BinaryWriter_PutU8(payload, &poff, err);
+            BinaryWriter_PutU8(payload, &poff, flags);
+        }
+
+#if TMAG_DESELECT_AFTER_CHANNEL
+        TCA9548_Select(&hi2c3, TMAG3001_TCA_ADDR_7B, 0);
+#endif
+    }
+
+    payload[0] = TMAG3001_TOTAL_NUM;
+    payload[1] = (uint8_t)(bitmap & 0xFFU);
+    payload[2] = (uint8_t)((bitmap >> 8) & 0xFFU);
+
+    size_t off = 0;
+    if (BinaryWriter_AppendFrame(out, out_size, &off, BINARY_FRAME_TYPE_TMAG_ARRAY,
+                                 (*seq)++, HAL_GetTick(),
+                                 payload, (uint16_t)poff)) {
+        if (frames != NULL) (*frames)++;
+    }
+
+    return (int)off;
+}
+
 int Sensor_TMAG3001_GetCount(void)
 {
     int count = 0;

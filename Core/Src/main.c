@@ -73,16 +73,19 @@ static void MPU_Config(void);
 /* USER CODE BEGIN 0 */
 
 #ifndef SENSOR_OUTPUT_ICM
-#define SENSOR_OUTPUT_ICM   0
+#define SENSOR_OUTPUT_ICM   1
 #endif
 #ifndef SENSOR_OUTPUT_AK
-#define SENSOR_OUTPUT_AK    0
+#define SENSOR_OUTPUT_AK    1
 #endif
 #ifndef SENSOR_OUTPUT_TMAG
-#define SENSOR_OUTPUT_TMAG  1
+#define SENSOR_OUTPUT_TMAG  0
 #endif
 #ifndef SENSOR_OUTPUT_FORMAT
 #define SENSOR_OUTPUT_FORMAT SENSOR_OUTPUT_FORMAT_BINARY
+#endif
+#ifndef AK_ARRAY_OUTPUT_HZ
+#define AK_ARRAY_OUTPUT_HZ 480U
 #endif
 
 // USB CDC发送字符串
@@ -129,6 +132,31 @@ static void USB_Send_Buffer(const uint8_t *buf, uint16_t len)
 void USB_Send_Raw(const uint8_t *buf, uint16_t len)
 {
     USB_Send_Buffer(buf, len);
+}
+
+static void Main_DWT_Init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static int Main_DWT_Due(uint32_t *next_cycle, uint32_t period_cycles)
+{
+    uint32_t now = DWT->CYCCNT;
+
+    if (*next_cycle == 0U) {
+        *next_cycle = now;
+    }
+    if ((int32_t)(now - *next_cycle) < 0) {
+        return 0;
+    }
+
+    *next_cycle += period_cycles;
+    if ((int32_t)(now - *next_cycle) >= 0) {
+        *next_cycle = now + period_cycles;
+    }
+    return 1;
 }
 
 void USB_Send_String(char *str)
@@ -189,6 +217,7 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
+  Main_DWT_Init();
 
   /* USER CODE BEGIN SysInit */
 
@@ -275,6 +304,7 @@ int main(void)
         static uint32_t skipped = 0;
         static uint32_t errors = 0;
         static uint32_t last_stats_ms = 0;
+        static uint32_t next_ak_cycle = 0;
 
 #if SENSOR_OUTPUT_ICM
 	    n = ICM42670_ReadToBinary(&icm, binary_frame, sizeof(binary_frame),
@@ -285,18 +315,20 @@ int main(void)
 #endif
 
 #if SENSOR_OUTPUT_AK
-    n = Sensor_AK09973D_ReadToBinary(binary_frame, sizeof(binary_frame),
-                                     &binary_seq, &ak_frames, &skipped, &errors);
-    if (n > 0) {
-        USB_Send_Raw(binary_frame, (uint16_t)n);
+    if (Main_DWT_Due(&next_ak_cycle, SystemCoreClock / AK_ARRAY_OUTPUT_HZ)) {
+        n = Sensor_AK09973D_ReadArrayToBinary(binary_frame, sizeof(binary_frame),
+                                              &binary_seq, &ak_frames, &skipped, &errors);
+        if (n > 0) {
+            USB_Send_Raw(binary_frame, (uint16_t)n);
+        }
     }
 #endif
 
 #if SENSOR_OUTPUT_TMAG
     {
-        n = Sensor_TMAG3001_ReadAllToBinary(binary_frame, sizeof(binary_frame),
-                                            &binary_seq, &tmag_frames,
-                                            &skipped, &errors);
+        n = Sensor_TMAG3001_ReadArrayToBinary(binary_frame, sizeof(binary_frame),
+                                              &binary_seq, &tmag_frames,
+                                              &skipped, &errors);
 
         if (n > 0) {
             USB_Send_Raw(binary_frame, (uint16_t)n);

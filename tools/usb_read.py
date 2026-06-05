@@ -16,6 +16,8 @@ TYPE_NAMES = {
     0x01: "AK",
     0x02: "TMAG",
     0x03: "ICM",
+    0x11: "AK_ARRAY",
+    0x12: "TMAG_ARRAY",
     0xE0: "ERR",
     0xF0: "STATS",
 }
@@ -68,7 +70,7 @@ def parse_binary_frames(raw):
         payload_len = struct.unpack_from("<H", raw, start + 12)[0]
         total_len = 14 + payload_len + 2
 
-        if payload_len > 128:
+        if payload_len > 512:
             pos = start + 1
             continue
         if len(raw) - start < total_len:
@@ -104,6 +106,48 @@ def decode_frame(frame):
     if frame_type == 0x03 and len(payload) == 14:
         ax, ay, az, gx, gy, gz, temp = struct.unpack("<hhhhhhh", payload)
         return "ICM", "ICM", f"ICM seq={seq} t={tick_ms} acc=({ax},{ay},{az}) gyr=({gx},{gy},{gz}) temp={temp}"
+    if frame_type == 0x11 and len(payload) >= 3:
+        count = payload[0]
+        bitmap = struct.unpack_from("<H", payload, 1)[0]
+        expected_len = 3 + count * 12
+        if len(payload) == expected_len:
+            entries = []
+            for i in range(count):
+                off = 3 + i * 12
+                sid, bus, mask, hx, hy, hz, status, err, dor = struct.unpack_from("<BBBhhhBBB", payload, off)
+                if len(entries) < 4:
+                    entries.append(
+                        f"id={sid} Bus{bus}_Mask{mask:02X} h=({hx},{hy},{hz}) st={status} err={err} dor={dor}"
+                    )
+            preview = "; ".join(entries)
+            if count > 4:
+                preview += "; ..."
+            return (
+                "AK_ARRAY",
+                "AK_ARRAY",
+                f"AK_ARRAY seq={seq} t={tick_ms} count={count} bitmap=0x{bitmap:04X} {preview}"
+            )
+    if frame_type == 0x12 and len(payload) >= 3:
+        count = payload[0]
+        bitmap = struct.unpack_from("<H", payload, 1)[0]
+        expected_len = 3 + count * 12
+        if len(payload) == expected_len:
+            entries = []
+            for i in range(count):
+                off = 3 + i * 12
+                sid, ch, addr, x, y, z, status, err, flags = struct.unpack_from("<BBBhhhBBB", payload, off)
+                if len(entries) < 4:
+                    entries.append(
+                        f"id={sid} CH{ch}_{addr:02X} xyz=({x},{y},{z}) st={status} err={err} flags={flags}"
+                    )
+            preview = "; ".join(entries)
+            if count > 4:
+                preview += "; ..."
+            return (
+                "TMAG_ARRAY",
+                "TMAG_ARRAY",
+                f"TMAG_ARRAY seq={seq} t={tick_ms} count={count} bitmap=0x{bitmap:04X} {preview}"
+            )
     if frame_type == 0xE0 and len(payload) == 7:
         source, code, detail = struct.unpack("<BHI", payload)
         key = f"SRC{source}"
@@ -163,7 +207,7 @@ def analyze_binary(raw, elapsed):
             print(f"  {sample}")
 
     print("\n--- 帧率统计 ---")
-    for name in ["AK", "TMAG", "ICM", "ERR", "STATS"]:
+    for name in ["AK_ARRAY", "TMAG_ARRAY", "AK", "TMAG", "ICM", "ERR", "STATS"]:
         count = counts.get(name, 0)
         if count == 0:
             continue

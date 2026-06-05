@@ -22,10 +22,12 @@ static const struct {
 
 // 有效传感器列表
 static struct {
+    uint8_t sensor_id;
     uint8_t i2c_bus;
     uint8_t mask;
     ak09973d_t dev;
 } g_valid[AK09973D_COUNT];
+static int g_valid_count;
 
 static I2C_HandleTypeDef* get_i2c(uint8_t bus)
 {
@@ -201,6 +203,7 @@ static int csv_append_akerr_line(char *out, size_t out_size, size_t *off,
 void Sensor_AK09973D_Init_All(void)
 {
     memset(g_valid, 0, sizeof(g_valid));
+    g_valid_count = 0;
     ak_bus_reset(1);
     ak_bus_reset(2);
 
@@ -249,10 +252,12 @@ void Sensor_AK09973D_Init_All(void)
             continue;
         }
 
+        g_valid[count].sensor_id = (uint8_t)(i + 1);
         g_valid[count].i2c_bus = g_config[i].i2c_bus;
         g_valid[count].mask = mask;
         g_valid[count].dev = dev;
         count++;
+        g_valid_count = count;
 
         TCA9548_Select(hi2c, AK09973D_TCA_ADDR_7B, 0);
     }
@@ -376,6 +381,80 @@ int Sensor_AK09973D_ReadToBinary(uint8_t *out, size_t out_size, uint32_t *seq,
         } else {
             break;
         }
+    }
+
+    return (int)off;
+}
+
+int Sensor_AK09973D_ReadArrayToBinary(uint8_t *out, size_t out_size,
+                                      uint32_t *seq, uint32_t *frames,
+                                      uint32_t *skipped, uint32_t *errors)
+{
+    uint8_t payload[1U + 2U + AK09973D_COUNT * 12U];
+    size_t poff = 3U;
+    uint8_t count = AK09973D_COUNT;
+    uint16_t bitmap = 0U;
+
+    for (int slot = 0; slot < AK09973D_COUNT; slot++) {
+        const uint8_t sensor_id = (uint8_t)(slot + 1);
+        const uint8_t bus = g_config[slot].i2c_bus;
+        const uint8_t mask = g_config[slot].mask;
+        ak09973d_t *dev = NULL;
+        ak09973d_magdata_t data = {0};
+        uint8_t status = 0U;
+        uint8_t err = 0U;
+        uint8_t dor = 0U;
+
+        for (int i = 0; i < g_valid_count; i++) {
+            if (g_valid[i].sensor_id == sensor_id) {
+                dev = &g_valid[i].dev;
+                break;
+            }
+        }
+
+        if (dev == NULL || dev->hi2c == NULL) {
+            if (errors != NULL) (*errors)++;
+            err = 3U;
+        } else if (ak_select_channel(bus, mask) != HAL_OK) {
+            if (errors != NULL) (*errors)++;
+            err = 1U;
+        } else if (AK09973D_ReadMagData(dev, &data) != HAL_OK) {
+            I2C_HandleTypeDef *hi2c = get_i2c(bus);
+
+            if (errors != NULL) (*errors)++;
+            (void)HAL_I2C_GetError(hi2c);
+            err = 2U;
+        } else {
+            status = (data.status & AK09973D_ST_DRDY) ? 1U : 0U;
+            err = (data.status & AK09973D_ST_ERR) ? 4U : 0U;
+            dor = (data.status & AK09973D_ST_DOR) ? 1U : 0U;
+            if (status != 0U && err == 0U) {
+                bitmap |= (uint16_t)(1U << slot);
+            } else if (skipped != NULL) {
+                (*skipped)++;
+            }
+        }
+
+        BinaryWriter_PutU8(payload, &poff, sensor_id);
+        BinaryWriter_PutU8(payload, &poff, bus);
+        BinaryWriter_PutU8(payload, &poff, mask);
+        BinaryWriter_PutI16(payload, &poff, data.hx);
+        BinaryWriter_PutI16(payload, &poff, data.hy);
+        BinaryWriter_PutI16(payload, &poff, data.hz);
+        BinaryWriter_PutU8(payload, &poff, status);
+        BinaryWriter_PutU8(payload, &poff, err);
+        BinaryWriter_PutU8(payload, &poff, dor);
+    }
+
+    payload[0] = count;
+    payload[1] = (uint8_t)(bitmap & 0xFFU);
+    payload[2] = (uint8_t)((bitmap >> 8) & 0xFFU);
+
+    size_t off = 0;
+    if (BinaryWriter_AppendFrame(out, out_size, &off, BINARY_FRAME_TYPE_AK_ARRAY,
+                                 (*seq)++, HAL_GetTick(),
+                                 payload, (uint16_t)poff)) {
+        if (frames != NULL) (*frames)++;
     }
 
     return (int)off;
