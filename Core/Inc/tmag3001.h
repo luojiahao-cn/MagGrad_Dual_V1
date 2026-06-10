@@ -44,9 +44,18 @@
 #define TMAG3001_DEV_CFG1_CONV_AVG_16X      0x10  // ~1600us
 #define TMAG3001_DEV_CFG1_CONV_AVG_32X      0x14  // ~3200us
 #define TMAG3001_DEV_CFG1_I2C_RD_STANDARD   0x00
+
+#ifndef TMAG3001_CONV_AVG_SETTING
+#define TMAG3001_CONV_AVG_SETTING           TMAG3001_DEV_CFG1_CONV_AVG_8X
+#endif
+
+#ifndef TMAG3001_DEV_CFG2_POWER_SETTING
+#define TMAG3001_DEV_CFG2_POWER_SETTING     TMAG3001_DEV_CFG2_LOW_CURRENT
+#endif
+
 #define TMAG3001_DEV_CFG1_DEFAULT           (TMAG3001_DEV_CFG1_CRC_DISABLED | \
                                              TMAG3001_DEV_CFG1_TEMPCO_NONE | \
-                                             TMAG3001_DEV_CFG1_CONV_AVG_1X | \
+                                             TMAG3001_CONV_AVG_SETTING | \
                                              TMAG3001_DEV_CFG1_I2C_RD_STANDARD)
 
 // Device_Config_2: Operating_Mode[1:0] is bits [1:0]; 2h selects continuous
@@ -63,7 +72,7 @@
 #define TMAG3001_DEV_CFG2_MODE_WAKE_SLEEP   0x03
 #define TMAG3001_DEV_CFG2_STANDBY           TMAG3001_DEV_CFG2_MODE_STANDBY
 #define TMAG3001_DEV_CFG2_CONTINUOUS        (TMAG3001_DEV_CFG2_THR_HYST_2LSB | \
-                                             TMAG3001_DEV_CFG2_LOW_CURRENT | \
+                                             TMAG3001_DEV_CFG2_POWER_SETTING | \
                                              TMAG3001_DEV_CFG2_GLITCH_FILTER_ON | \
                                              TMAG3001_DEV_CFG2_TRIGGER_I2C | \
                                              TMAG3001_DEV_CFG2_MODE_CONTINUOUS)
