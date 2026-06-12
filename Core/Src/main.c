@@ -33,6 +33,7 @@
 #include "binary_writer.h"
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include "usbd_cdc_if.h"
 #include "usbd_cdc.h"
@@ -88,9 +89,16 @@ static void MPU_Config(void);
 #ifndef AK_ARRAY_OUTPUT_HZ
 #define AK_ARRAY_OUTPUT_HZ 480U
 #endif
+#define MAGGRAD_PROJECT_NAME "MagGrad"
+#define MAGGRAD_BOARD_NAME "MagGrad_AK_TMAG_V1"
+#define MAGGRAD_PROTOCOL_NAME "maggrad_binary_v1"
+#define CONT_DEFAULT_HZ AK_ARRAY_OUTPUT_HZ
+#define ICM_DEFAULT_HZ 480U
 #define TRIG_AUTO_DEFAULT_HZ 100U
 #define TRIG_AUTO_MIN_HZ 1U
 #define TRIG_AUTO_MAX_HZ 500U
+#define RUNTIME_RATE_MIN_HZ 1U
+#define RUNTIME_RATE_MAX_HZ 1000U
 
 typedef enum {
     RT_STRATEGY_IDLE = 0,
@@ -98,6 +106,12 @@ typedef enum {
     RT_STRATEGY_TRIG,
     RT_STRATEGY_TRIG_AUTO
 } runtime_strategy_t;
+
+typedef enum {
+    RT_PROFILE_AUTO = 0,
+    RT_PROFILE_LOW_NOISE,
+    RT_PROFILE_STABLE
+} runtime_profile_t;
 
 #define RT_SENSOR_AK   0x01U
 #define RT_SENSOR_TMAG 0x02U
@@ -111,18 +125,35 @@ typedef struct {
     uint32_t trigger_hz;
     uint32_t next_trigger_cycle;
     uint32_t next_ak_cycle;
+    uint32_t next_icm_cycle;
     uint32_t led_activity_until_ms;
     uint32_t led_error_until_ms;
     uint8_t manual_trigger_pending;
     uint8_t ak_initialized;
     uint8_t tmag_initialized;
     uint8_t icm_initialized;
+    uint32_t target_hz;
+    uint32_t icm_hz;
+    runtime_profile_t requested_profile;
+    runtime_profile_t active_profile;
+    char profile_status[16];
+    char profile_id[40];
+    char fallback_from[16];
+    char warning[40];
 } runtime_state_t;
 
 static runtime_state_t g_rt = {
     .strategy = RT_STRATEGY_IDLE,
     .sensor_mask = 0U,
-    .trigger_hz = TRIG_AUTO_DEFAULT_HZ
+    .trigger_hz = TRIG_AUTO_DEFAULT_HZ,
+    .target_hz = CONT_DEFAULT_HZ,
+    .icm_hz = ICM_DEFAULT_HZ,
+    .requested_profile = RT_PROFILE_AUTO,
+    .active_profile = RT_PROFILE_LOW_NOISE,
+    .profile_status = "low_noise",
+    .profile_id = "ak_sdr0_odr500",
+    .fallback_from = "NONE",
+    .warning = "NONE"
 };
 
 static uint32_t g_binary_seq = 0U;
@@ -132,6 +163,11 @@ static uint32_t g_icm_frames = 0U;
 static uint32_t g_skipped = 0U;
 static uint32_t g_errors = 0U;
 static uint32_t g_last_stats_ms = 0U;
+static uint8_t g_ak_active_cntl2 = AK09973D_ACTIVE_CNTL2;
+static uint8_t g_tmag_dev_cfg1 = TMAG3001_DEV_CFG1_DEFAULT;
+static uint8_t g_tmag_dev_cfg2 = (uint8_t)(TMAG3001_DEV_CFG2_CONTINUOUS | TMAG3001_DEV_CFG2_LOW_NOISE);
+static char g_tmag_profile_id[40] = "tmag_lp_ln1_avg8x";
+static uint8_t g_tmag_profile_explicit = 0U;
 
 #define LED_ACTIVE GPIO_PIN_RESET
 #define LED_INACTIVE GPIO_PIN_SET
@@ -280,9 +316,23 @@ static const char *Runtime_SensorName(uint8_t mask)
     }
 }
 
+static const char *Runtime_ProfileName(runtime_profile_t profile)
+{
+    switch (profile) {
+    case RT_PROFILE_AUTO:
+        return "AUTO";
+    case RT_PROFILE_LOW_NOISE:
+        return "LOW_NOISE";
+    case RT_PROFILE_STABLE:
+        return "STABLE";
+    default:
+        return "?";
+    }
+}
+
 static void Runtime_SendLine(const char *line)
 {
-    char out[256];
+    char out[512];
     int n = snprintf(out, sizeof(out), "%s\r\n", line);
     if (n > 0) {
         USB_Send_String(out);
@@ -389,12 +439,187 @@ static int Runtime_ParseHz(const char *s, uint32_t *hz)
     unsigned long v = strtoul(s, &end, 10);
 
     if (s == end || end == NULL || *end != '\0' ||
-        v < TRIG_AUTO_MIN_HZ || v > TRIG_AUTO_MAX_HZ) {
+        v < RUNTIME_RATE_MIN_HZ || v > RUNTIME_RATE_MAX_HZ) {
         return 0;
     }
 
     *hz = (uint32_t)v;
     return 1;
+}
+
+static int Runtime_ParseProfile(const char *s, runtime_profile_t *profile)
+{
+    if (strcmp(s, "AUTO") == 0) {
+        *profile = RT_PROFILE_AUTO;
+    } else if (strcmp(s, "LOW_NOISE") == 0) {
+        *profile = RT_PROFILE_LOW_NOISE;
+    } else if (strcmp(s, "STABLE") == 0) {
+        *profile = RT_PROFILE_STABLE;
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+static uint8_t Runtime_TMAGDevCfg1ForAvg(const char *avg)
+{
+    if (strcasecmp(avg, "avg1x") == 0) {
+        return (uint8_t)((TMAG3001_DEV_CFG1_DEFAULT & (uint8_t)~0x1CU) | TMAG3001_DEV_CFG1_CONV_AVG_1X);
+    }
+    if (strcasecmp(avg, "avg2x") == 0) {
+        return (uint8_t)((TMAG3001_DEV_CFG1_DEFAULT & (uint8_t)~0x1CU) | TMAG3001_DEV_CFG1_CONV_AVG_2X);
+    }
+    if (strcasecmp(avg, "avg4x") == 0) {
+        return (uint8_t)((TMAG3001_DEV_CFG1_DEFAULT & (uint8_t)~0x1CU) | TMAG3001_DEV_CFG1_CONV_AVG_4X);
+    }
+    if (strcasecmp(avg, "avg8x") == 0) {
+        return (uint8_t)((TMAG3001_DEV_CFG1_DEFAULT & (uint8_t)~0x1CU) | TMAG3001_DEV_CFG1_CONV_AVG_8X);
+    }
+    if (strcasecmp(avg, "avg16x") == 0) {
+        return (uint8_t)((TMAG3001_DEV_CFG1_DEFAULT & (uint8_t)~0x1CU) | TMAG3001_DEV_CFG1_CONV_AVG_16X);
+    }
+    return (uint8_t)((TMAG3001_DEV_CFG1_DEFAULT & (uint8_t)~0x1CU) | TMAG3001_DEV_CFG1_CONV_AVG_32X);
+}
+
+static int Runtime_ParseTmagProfile(const char *s, runtime_profile_t *profile,
+                                    uint8_t *dev_cfg1, uint8_t *dev_cfg2,
+                                    const char **profile_id)
+{
+    const char *avg = NULL;
+    int lp_ln = 0;
+
+    if (strncasecmp(s, "tmag_lp_ln1_", 12) == 0) {
+        avg = s + 12;
+        lp_ln = 1;
+        *profile = RT_PROFILE_LOW_NOISE;
+    } else if (strncasecmp(s, "TMAG_LP_LN1_", 12) == 0) {
+        avg = s + 12;
+        lp_ln = 1;
+        *profile = RT_PROFILE_LOW_NOISE;
+    } else if (strncasecmp(s, "tmag_lc_", 8) == 0) {
+        avg = s + 8;
+        lp_ln = 0;
+        *profile = RT_PROFILE_STABLE;
+    } else if (strncasecmp(s, "TMAG_LC_", 8) == 0) {
+        avg = s + 8;
+        lp_ln = 0;
+        *profile = RT_PROFILE_STABLE;
+    } else {
+        return 0;
+    }
+
+    if (strcasecmp(avg, "avg1x") != 0 && strcasecmp(avg, "avg2x") != 0 &&
+        strcasecmp(avg, "avg4x") != 0 && strcasecmp(avg, "avg8x") != 0 &&
+        strcasecmp(avg, "avg16x") != 0 && strcasecmp(avg, "avg32x") != 0) {
+        return 0;
+    }
+
+    *dev_cfg1 = Runtime_TMAGDevCfg1ForAvg(avg);
+    *dev_cfg2 = (uint8_t)(TMAG3001_DEV_CFG2_CONTINUOUS |
+                          (lp_ln ? TMAG3001_DEV_CFG2_LOW_NOISE : TMAG3001_DEV_CFG2_LOW_CURRENT));
+    *profile_id = s;
+    return 1;
+}
+
+static void Runtime_SetTmagAutoProfile(uint32_t hz, runtime_profile_t profile)
+{
+    int lp_ln = (profile != RT_PROFILE_STABLE);
+
+    (void)hz;
+
+    g_tmag_dev_cfg1 = Runtime_TMAGDevCfg1ForAvg("avg32x");
+    g_tmag_dev_cfg2 = (uint8_t)(TMAG3001_DEV_CFG2_CONTINUOUS |
+                                (lp_ln ? TMAG3001_DEV_CFG2_LOW_NOISE : TMAG3001_DEV_CFG2_LOW_CURRENT));
+    snprintf(g_tmag_profile_id, sizeof(g_tmag_profile_id),
+             lp_ln ? "tmag_lp_ln1_avg32x" : "tmag_lc_avg32x");
+}
+
+static int Runtime_TmagProfileVerified(const char *profile_id, uint32_t hz)
+{
+    if (profile_id == NULL) {
+        return 0;
+    }
+
+    if (strstr(profile_id, "AVG32X") != NULL || strstr(profile_id, "avg32x") != NULL) {
+        return hz <= 280U;
+    }
+    if (strstr(profile_id, "AVG16X") != NULL || strstr(profile_id, "avg16x") != NULL) {
+        return hz <= 200U;
+    }
+    if (strstr(profile_id, "AVG8X") != NULL || strstr(profile_id, "avg8x") != NULL ||
+        strstr(profile_id, "AVG4X") != NULL || strstr(profile_id, "avg4x") != NULL ||
+        strstr(profile_id, "AVG2X") != NULL || strstr(profile_id, "avg2x") != NULL ||
+        strstr(profile_id, "AVG1X") != NULL || strstr(profile_id, "avg1x") != NULL) {
+        return hz <= 200U;
+    }
+
+    return 0;
+}
+
+static void Runtime_ClearWarning(void)
+{
+    strncpy(g_rt.warning, "NONE", sizeof(g_rt.warning));
+    strncpy(g_rt.fallback_from, "NONE", sizeof(g_rt.fallback_from));
+    strncpy(g_rt.profile_status, "low_noise", sizeof(g_rt.profile_status));
+}
+
+static uint8_t Runtime_AKCntl2ForHz(uint32_t hz, const char **profile_id,
+                                    const char **profile_status,
+                                    const char **fallback_from,
+                                    const char **warning)
+{
+    *profile_id = "ak_sdr0_odr500";
+    *profile_status = "verified";
+    *fallback_from = "NONE";
+    *warning = "NONE";
+
+    if (hz <= 200U) {
+        return AK09973D_MODE_500HZ;
+    }
+    if (hz <= 500U) {
+        *profile_status = "unverified";
+        *warning = "RATE_UNVERIFIED";
+        return AK09973D_MODE_500HZ;
+    }
+
+    *profile_status = "unverified";
+    *fallback_from = "ak_sdr0_odr1000";
+    *warning = "RATE_UNVERIFIED";
+    return AK09973D_MODE_500HZ;
+}
+
+static void Runtime_SelectProfile(uint8_t sensor_mask, uint32_t hz)
+{
+    const char *profile_id = "low_noise_default";
+    const char *profile_status = "unverified";
+    const char *fallback_from = "NONE";
+    const char *warning = "NONE";
+
+    g_rt.active_profile = (g_rt.requested_profile == RT_PROFILE_STABLE)
+        ? RT_PROFILE_STABLE
+        : RT_PROFILE_LOW_NOISE;
+
+    if ((sensor_mask & RT_SENSOR_AK) != 0U) {
+        g_ak_active_cntl2 = Runtime_AKCntl2ForHz(hz, &profile_id, &profile_status,
+                                                 &fallback_from, &warning);
+    } else if ((sensor_mask & RT_SENSOR_TMAG) != 0U) {
+        if (g_tmag_profile_explicit == 0U) {
+            Runtime_SetTmagAutoProfile(hz, g_rt.requested_profile);
+        }
+        profile_id = g_tmag_profile_id;
+        if (Runtime_TmagProfileVerified(profile_id, hz)) {
+            profile_status = "verified";
+            warning = "NONE";
+        } else {
+            profile_status = "unverified";
+            warning = "RATE_UNVERIFIED";
+        }
+    }
+
+    strncpy(g_rt.profile_id, profile_id, sizeof(g_rt.profile_id));
+    strncpy(g_rt.profile_status, profile_status, sizeof(g_rt.profile_status));
+    strncpy(g_rt.fallback_from, fallback_from, sizeof(g_rt.fallback_from));
+    strncpy(g_rt.warning, warning, sizeof(g_rt.warning));
 }
 
 static int Runtime_EnsureSensors(uint8_t sensor_mask, runtime_strategy_t strategy)
@@ -416,8 +641,12 @@ static int Runtime_EnsureSensors(uint8_t sensor_mask, runtime_strategy_t strateg
     if ((sensor_mask & RT_SENSOR_AK) != 0U && g_rt.ak_initialized == 0U) {
 #if SENSOR_OUTPUT_AK
         Sensor_AK09973D_Init_All();
-        if (Sensor_AK09973D_GetCount() > 0) {
+        int ak_count = Sensor_AK09973D_GetCount();
+        if (ak_count > 0) {
             g_rt.ak_initialized = 1U;
+            if (ak_count < AK09973D_COUNT) {
+                snprintf(g_rt.warning, sizeof(g_rt.warning), "AK_INIT_PARTIAL");
+            }
         } else {
             ok = 0;
         }
@@ -441,7 +670,7 @@ static int Runtime_EnsureSensors(uint8_t sensor_mask, runtime_strategy_t strateg
 
 #if SENSOR_OUTPUT_AK
     if (ok != 0 && (sensor_mask & RT_SENSOR_AK) != 0U && strategy == RT_STRATEGY_CONT) {
-        if (Sensor_AK09973D_SetContinuousMode_All() != HAL_OK) {
+        if (Sensor_AK09973D_SetContinuousMode_AllWithCntl2(g_ak_active_cntl2) != HAL_OK) {
             ok = 0;
         }
     }
@@ -451,9 +680,33 @@ static int Runtime_EnsureSensors(uint8_t sensor_mask, runtime_strategy_t strateg
     if (ok != 0 && (sensor_mask & RT_SENSOR_TMAG) != 0U) {
         HAL_StatusTypeDef status;
         if (strategy == RT_STRATEGY_TRIG || strategy == RT_STRATEGY_TRIG_AUTO) {
-            status = Sensor_TMAG3001_SetTriggerMode_All();
+            status = Sensor_TMAG3001_SetTriggerProfile_All(g_tmag_dev_cfg1, g_tmag_dev_cfg2);
+            if (status != HAL_OK && g_rt.requested_profile != RT_PROFILE_STABLE) {
+                uint8_t fallback_cfg2 = (uint8_t)((g_tmag_dev_cfg2 & (uint8_t)~TMAG3001_DEV_CFG2_LOW_NOISE) |
+                                                  TMAG3001_DEV_CFG2_LOW_CURRENT);
+                status = Sensor_TMAG3001_SetTriggerProfile_All(g_tmag_dev_cfg1, fallback_cfg2);
+                if (status == HAL_OK) {
+                    g_rt.active_profile = RT_PROFILE_STABLE;
+                    strncpy(g_rt.profile_status, "fallback", sizeof(g_rt.profile_status));
+                    strncpy(g_rt.fallback_from, g_tmag_profile_id, sizeof(g_rt.fallback_from));
+                    strncpy(g_rt.profile_id, "tmag_lc_same_avg", sizeof(g_rt.profile_id));
+                    strncpy(g_rt.warning, "TMAG_LP_LN_INIT_FAILED", sizeof(g_rt.warning));
+                }
+            }
         } else {
-            status = Sensor_TMAG3001_SetContinuousMode_All();
+            status = Sensor_TMAG3001_SetContinuousProfile_All(g_tmag_dev_cfg1, g_tmag_dev_cfg2);
+            if (status != HAL_OK && g_rt.requested_profile != RT_PROFILE_STABLE) {
+                uint8_t fallback_cfg2 = (uint8_t)((g_tmag_dev_cfg2 & (uint8_t)~TMAG3001_DEV_CFG2_LOW_NOISE) |
+                                                  TMAG3001_DEV_CFG2_LOW_CURRENT);
+                status = Sensor_TMAG3001_SetContinuousProfile_All(g_tmag_dev_cfg1, fallback_cfg2);
+                if (status == HAL_OK) {
+                    g_rt.active_profile = RT_PROFILE_STABLE;
+                    strncpy(g_rt.profile_status, "fallback", sizeof(g_rt.profile_status));
+                    strncpy(g_rt.fallback_from, g_tmag_profile_id, sizeof(g_rt.fallback_from));
+                    strncpy(g_rt.profile_id, "tmag_lc_same_avg", sizeof(g_rt.profile_id));
+                    strncpy(g_rt.warning, "TMAG_LP_LN_INIT_FAILED", sizeof(g_rt.warning));
+                }
+            }
         }
         if (status != HAL_OK) {
             ok = 0;
@@ -466,16 +719,26 @@ static int Runtime_EnsureSensors(uint8_t sensor_mask, runtime_strategy_t strateg
 
 static void Runtime_SendStatus(void)
 {
-    char line[256];
+    char line[384];
     snprintf(line, sizeof(line),
-             "OK STATUS strategy=%s sensors=%s mask=0x%02X trigger_hz=%lu init=AK:%u,TMAG:%u,ICM:%u frames=AK:%lu,TMAG:%lu,ICM:%lu skipped=%lu errors=%lu",
+             "OK STATUS strategy=%s sensors=%s mask=0x%02X target_hz=%lu actual_hz=%lu icm_hz=%lu icm_actual_hz=%lu profile=%s profile_id=%s profile_status=%s fallback_from=%s warning=%s init=AK:%u,TMAG:%u,ICM:%u ak_count=%d ak_bitmap=0x%03X frames=AK:%lu,TMAG:%lu,ICM:%lu skipped=%lu errors=%lu",
              Runtime_StrategyName(g_rt.strategy),
              Runtime_SensorName(g_rt.sensor_mask),
              g_rt.sensor_mask,
-             (unsigned long)g_rt.trigger_hz,
+             (unsigned long)g_rt.target_hz,
+             (unsigned long)g_rt.target_hz,
+             (unsigned long)g_rt.icm_hz,
+             (unsigned long)g_rt.icm_hz,
+             Runtime_ProfileName(g_rt.active_profile),
+             g_rt.profile_id,
+             g_rt.profile_status,
+             g_rt.fallback_from,
+             g_rt.warning,
              g_rt.ak_initialized,
              g_rt.tmag_initialized,
              g_rt.icm_initialized,
+             Sensor_AK09973D_GetCount(),
+             (unsigned int)Sensor_AK09973D_GetInitBitmap(),
              (unsigned long)g_ak_frames,
              (unsigned long)g_tmag_frames,
              (unsigned long)g_icm_frames,
@@ -491,6 +754,7 @@ static void Runtime_SetIdle(void)
     g_rt.manual_trigger_pending = 0U;
     g_rt.next_trigger_cycle = 0U;
     g_rt.next_ak_cycle = 0U;
+    g_rt.next_icm_cycle = 0U;
 }
 
 static void Runtime_SetMode(runtime_strategy_t strategy, uint8_t sensor_mask, uint32_t hz)
@@ -498,9 +762,11 @@ static void Runtime_SetMode(runtime_strategy_t strategy, uint8_t sensor_mask, ui
     g_rt.strategy = strategy;
     g_rt.sensor_mask = sensor_mask;
     g_rt.trigger_hz = hz;
+    g_rt.target_hz = hz;
     g_rt.manual_trigger_pending = 0U;
     g_rt.next_trigger_cycle = 0U;
     g_rt.next_ak_cycle = 0U;
+    g_rt.next_icm_cycle = 0U;
 }
 
 static void Runtime_HandleCommand(char *line)
@@ -527,6 +793,57 @@ static void Runtime_HandleCommand(char *line)
 
     if (strcmp(tok[0], "STATUS") == 0) {
         Runtime_SendStatus();
+        return;
+    }
+
+    if (strcmp(tok[0], "INFO") == 0) {
+        Runtime_SendLine("OK INFO project=" MAGGRAD_PROJECT_NAME " board=" MAGGRAD_BOARD_NAME " protocol=" MAGGRAD_PROTOCOL_NAME " sensors=AK,TMAG,ICM");
+        return;
+    }
+
+    if (strcmp(tok[0], "CAPS") == 0) {
+        Runtime_SendLine("OK CAPS profiles=AUTO,LOW_NOISE,STABLE cont_hz=1..1000 trig_auto_hz=1..500 ak=odr500:1..200:verified,odr500:201..500:unverified,odr1000:501..1000:not-default tmag_auto=lp_ln1_avg32x:1..280,lp_ln1_avg32x:281..500:unverified tmag=lp_ln1_avg{1,2,4,8,16,32}x,lc_avg{1,2,4,8,16,32}x icm=low_noise");
+        return;
+    }
+
+    if (strcmp(tok[0], "PROFILE") == 0) {
+        runtime_profile_t profile;
+        uint8_t tmag_dev_cfg1 = TMAG3001_DEV_CFG1_DEFAULT;
+        uint8_t tmag_dev_cfg2 = (uint8_t)(TMAG3001_DEV_CFG2_CONTINUOUS | TMAG3001_DEV_CFG2_LOW_NOISE);
+        const char *tmag_profile_id = NULL;
+        const char *reply_profile_id = NULL;
+        if (ntok < 2) {
+            Runtime_MarkError();
+            Runtime_SendLine("ERR BAD_PROFILE");
+            return;
+        }
+        if (Runtime_ParseProfile(tok[1], &profile)) {
+            if (profile == RT_PROFILE_STABLE) {
+                tmag_dev_cfg2 = (uint8_t)(TMAG3001_DEV_CFG2_CONTINUOUS | TMAG3001_DEV_CFG2_LOW_CURRENT);
+                tmag_profile_id = "tmag_lc_avg8x";
+            } else {
+                tmag_profile_id = "tmag_lp_ln1_avg8x";
+            }
+            reply_profile_id = tok[1];
+            g_tmag_profile_explicit = 0U;
+        } else if (!Runtime_ParseTmagProfile(tok[1], &profile, &tmag_dev_cfg1,
+                                             &tmag_dev_cfg2, &tmag_profile_id)) {
+            Runtime_MarkError();
+            Runtime_SendLine("ERR BAD_PROFILE");
+            return;
+        } else {
+            reply_profile_id = tmag_profile_id;
+            g_tmag_profile_explicit = 1U;
+        }
+        g_rt.requested_profile = profile;
+        g_tmag_dev_cfg1 = tmag_dev_cfg1;
+        g_tmag_dev_cfg2 = tmag_dev_cfg2;
+        strncpy(g_tmag_profile_id, tmag_profile_id, sizeof(g_tmag_profile_id));
+        Runtime_ClearWarning();
+        Runtime_SelectProfile(g_rt.sensor_mask, g_rt.target_hz);
+        char out[96];
+        snprintf(out, sizeof(out), "OK PROFILE %s", reply_profile_id);
+        Runtime_SendLine(out);
         return;
     }
 
@@ -565,17 +882,26 @@ static void Runtime_HandleCommand(char *line)
             return;
         }
 
-        if (strategy == RT_STRATEGY_TRIG_AUTO && ntok >= 4) {
+        if ((strategy == RT_STRATEGY_CONT || strategy == RT_STRATEGY_TRIG_AUTO) && ntok >= 4) {
             if (!Runtime_ParseHz(tok[3], &hz)) {
                 Runtime_MarkError();
                 Runtime_SendLine("ERR BAD_RATE");
                 return;
             }
         }
+        if (strategy == RT_STRATEGY_CONT && ntok < 4) {
+            hz = g_rt.target_hz;
+        }
+        if (strategy == RT_STRATEGY_TRIG_AUTO && hz > TRIG_AUTO_MAX_HZ) {
+            Runtime_MarkError();
+            Runtime_SendLine("ERR BAD_RATE");
+            return;
+        }
 
+        Runtime_SelectProfile(sensor_mask, hz);
         if (!Runtime_EnsureSensors(sensor_mask, strategy)) {
             Runtime_MarkError();
-            Runtime_SendLine("ERR INIT");
+            Runtime_SendLine("ERR SENSOR_INIT");
             return;
         }
 
@@ -596,15 +922,43 @@ static void Runtime_HandleCommand(char *line)
             Runtime_SendLine("ERR BAD_RATE");
             return;
         }
-        if (g_rt.strategy != RT_STRATEGY_TRIG_AUTO) {
+        if (g_rt.strategy == RT_STRATEGY_TRIG) {
             Runtime_MarkError();
             Runtime_SendLine("ERR BAD_MODE");
             return;
         }
+        if (g_rt.strategy == RT_STRATEGY_TRIG_AUTO && hz > TRIG_AUTO_MAX_HZ) {
+            Runtime_MarkError();
+            Runtime_SendLine("ERR BAD_RATE");
+            return;
+        }
+        g_rt.target_hz = hz;
         g_rt.trigger_hz = hz;
         g_rt.next_trigger_cycle = 0U;
+        g_rt.next_ak_cycle = 0U;
+        Runtime_SelectProfile(g_rt.sensor_mask, hz);
+#if SENSOR_OUTPUT_AK
+        if (g_rt.strategy == RT_STRATEGY_CONT && (g_rt.sensor_mask & RT_SENSOR_AK) != 0U && g_rt.ak_initialized != 0U) {
+            (void)Sensor_AK09973D_SetContinuousMode_AllWithCntl2(g_ak_active_cntl2);
+        }
+#endif
         char out[48];
         snprintf(out, sizeof(out), "OK RATE %lu", (unsigned long)hz);
+        Runtime_SendLine(out);
+        return;
+    }
+
+    if (strcmp(tok[0], "ICM_RATE") == 0) {
+        uint32_t hz;
+        if (ntok < 2 || !Runtime_ParseHz(tok[1], &hz)) {
+            Runtime_MarkError();
+            Runtime_SendLine("ERR BAD_RATE");
+            return;
+        }
+        g_rt.icm_hz = hz;
+        g_rt.next_icm_cycle = 0U;
+        char out[56];
+        snprintf(out, sizeof(out), "OK ICM_RATE %lu", (unsigned long)hz);
         Runtime_SendLine(out);
         return;
     }
@@ -795,16 +1149,19 @@ int main(void)
 #if SENSOR_OUTPUT_FORMAT == SENSOR_OUTPUT_FORMAT_BINARY
     Runtime_ProcessCommands();
 
-    if (g_rt.strategy != RT_STRATEGY_IDLE && (g_rt.sensor_mask & RT_SENSOR_ICM) != 0U) {
+    if (g_rt.strategy != RT_STRATEGY_IDLE &&
+        (g_rt.sensor_mask & RT_SENSOR_ICM) != 0U &&
+        Main_DWT_Due(&g_rt.next_icm_cycle, SystemCoreClock / g_rt.icm_hz)) {
         Runtime_ReadICM(binary_frame, sizeof(binary_frame));
     }
 
     if (g_rt.strategy == RT_STRATEGY_CONT) {
         if ((g_rt.sensor_mask & RT_SENSOR_AK) != 0U &&
-            Main_DWT_Due(&g_rt.next_ak_cycle, SystemCoreClock / AK_ARRAY_OUTPUT_HZ)) {
+            Main_DWT_Due(&g_rt.next_ak_cycle, SystemCoreClock / g_rt.target_hz)) {
             Runtime_ReadAKArray(binary_frame, sizeof(binary_frame));
         }
-        if ((g_rt.sensor_mask & RT_SENSOR_TMAG) != 0U) {
+        if ((g_rt.sensor_mask & RT_SENSOR_TMAG) != 0U &&
+            Main_DWT_Due(&g_rt.next_trigger_cycle, SystemCoreClock / g_rt.target_hz)) {
             Runtime_ReadTMAGArray(binary_frame, sizeof(binary_frame));
         }
     } else if (g_rt.strategy == RT_STRATEGY_TRIG) {

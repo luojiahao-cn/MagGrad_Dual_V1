@@ -31,6 +31,12 @@ int Sensor_TMAG3001_ReadArrayToBinary(uint8_t *out, size_t out_size, uint32_t *s
                                       uint32_t *errors);
 HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousMode_All(void);
 HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerMode_All(void);
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousLowNoise_All(void);
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousStable_All(void);
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousProfile_All(uint8_t dev_cfg1, uint8_t dev_cfg2);
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerLowNoise_All(void);
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerStable_All(void);
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerProfile_All(uint8_t dev_cfg1, uint8_t dev_cfg2);
 HAL_StatusTypeDef Sensor_TMAG3001_TriggerSingle_All(void);
 void Sensor_TMAG3001_ReadAll(void);
 int Sensor_TMAG3001_GetCount(void);

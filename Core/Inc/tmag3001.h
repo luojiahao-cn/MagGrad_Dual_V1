@@ -121,6 +121,7 @@ HAL_StatusTypeDef TMAG3001_Init(tmag3001_t *dev, I2C_HandleTypeDef *hi2c, uint8_
 HAL_StatusTypeDef TMAG3001_Probe(I2C_HandleTypeDef *hi2c, uint8_t addr7);
 HAL_StatusTypeDef TMAG3001_ReadData(tmag3001_t *dev, tmag3001_data_t *out);
 HAL_StatusTypeDef TMAG3001_ReadConfig(tmag3001_t *dev, uint8_t *buf, uint16_t len);
+HAL_StatusTypeDef TMAG3001_Configure(tmag3001_t *dev, uint8_t dev_cfg1, uint8_t dev_cfg2);
 HAL_StatusTypeDef TMAG3001_SetMode(tmag3001_t *dev, uint8_t dev_cfg2);
 uint8_t TMAG3001_IsDataReady(tmag3001_t *dev);
 

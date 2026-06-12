@@ -203,6 +203,23 @@ HAL_StatusTypeDef TMAG3001_SetMode(tmag3001_t *dev, uint8_t dev_cfg2)
     return write_reg(dev, TMAG3001_REG_DEV_CFG2, dev_cfg2);
 }
 
+HAL_StatusTypeDef TMAG3001_Configure(tmag3001_t *dev, uint8_t dev_cfg1, uint8_t dev_cfg2)
+{
+    if (write_checked(dev, TMAG3001_REG_DEV_CFG2, TMAG3001_DEV_CFG2_STANDBY) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    if (write_checked(dev, TMAG3001_REG_DEV_CFG1, dev_cfg1) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    if (write_checked(dev, TMAG3001_REG_DEV_CFG2, dev_cfg2) != HAL_OK) {
+        return HAL_ERROR;
+    }
+    if ((dev_cfg2 & TMAG3001_DEV_CFG2_MODE_CONTINUOUS) == TMAG3001_DEV_CFG2_MODE_CONTINUOUS) {
+        return wait_result_ready(dev);
+    }
+    return HAL_OK;
+}
+
 HAL_StatusTypeDef TMAG3001_SetAddress(tmag3001_t *dev, uint8_t new_addr7)
 {
     uint8_t val = (new_addr7 << 1) | 0x01;

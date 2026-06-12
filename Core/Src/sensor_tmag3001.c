@@ -623,7 +623,7 @@ void Sensor_TMAG3001_Init_All(void)
     fflush(stdout);
 }
 
-static HAL_StatusTypeDef tmag_configure_all_mode(uint8_t dev_cfg2)
+static HAL_StatusTypeDef tmag_configure_all(uint8_t dev_cfg1, uint8_t dev_cfg2)
 {
     HAL_StatusTypeDef result = HAL_OK;
 
@@ -643,7 +643,7 @@ static HAL_StatusTypeDef tmag_configure_all_mode(uint8_t dev_cfg2)
             continue;
         }
 
-        status = TMAG3001_SetMode(&inst->dev, dev_cfg2);
+        status = TMAG3001_Configure(&inst->dev, dev_cfg1, dev_cfg2);
         if (status != HAL_OK) {
             result = status;
         }
@@ -653,16 +653,66 @@ static HAL_StatusTypeDef tmag_configure_all_mode(uint8_t dev_cfg2)
     return result;
 }
 
+static HAL_StatusTypeDef tmag_configure_all_mode(uint8_t dev_cfg2)
+{
+    return tmag_configure_all(TMAG3001_DEV_CFG1_DEFAULT, dev_cfg2);
+}
+
 HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousMode_All(void)
 {
-    return tmag_configure_all_mode(TMAG3001_DEV_CFG2_CONTINUOUS);
+    return Sensor_TMAG3001_SetContinuousLowNoise_All();
 }
 
 HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerMode_All(void)
 {
 #if TMAG_TRIGGER_CONTINUOUS_BACKEND
-    return tmag_configure_all_mode(TMAG3001_DEV_CFG2_CONTINUOUS);
+    return Sensor_TMAG3001_SetTriggerLowNoise_All();
 #else
+    return tmag_configure_all_mode(TMAG3001_DEV_CFG2_STANDBY);
+#endif
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousLowNoise_All(void)
+{
+    return tmag_configure_all_mode((uint8_t)(TMAG3001_DEV_CFG2_CONTINUOUS | TMAG3001_DEV_CFG2_LOW_NOISE));
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousStable_All(void)
+{
+    return tmag_configure_all_mode((uint8_t)((TMAG3001_DEV_CFG2_CONTINUOUS & ~TMAG3001_DEV_CFG2_LOW_NOISE) |
+                                            TMAG3001_DEV_CFG2_LOW_CURRENT));
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetContinuousProfile_All(uint8_t dev_cfg1, uint8_t dev_cfg2)
+{
+    return tmag_configure_all(dev_cfg1, dev_cfg2);
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerLowNoise_All(void)
+{
+#if TMAG_TRIGGER_CONTINUOUS_BACKEND
+    return Sensor_TMAG3001_SetContinuousLowNoise_All();
+#else
+    return tmag_configure_all_mode(TMAG3001_DEV_CFG2_STANDBY);
+#endif
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerStable_All(void)
+{
+#if TMAG_TRIGGER_CONTINUOUS_BACKEND
+    return Sensor_TMAG3001_SetContinuousStable_All();
+#else
+    return tmag_configure_all_mode(TMAG3001_DEV_CFG2_STANDBY);
+#endif
+}
+
+HAL_StatusTypeDef Sensor_TMAG3001_SetTriggerProfile_All(uint8_t dev_cfg1, uint8_t dev_cfg2)
+{
+#if TMAG_TRIGGER_CONTINUOUS_BACKEND
+    return Sensor_TMAG3001_SetContinuousProfile_All(dev_cfg1, dev_cfg2);
+#else
+    (void)dev_cfg1;
+    (void)dev_cfg2;
     return tmag_configure_all_mode(TMAG3001_DEV_CFG2_STANDBY);
 #endif
 }

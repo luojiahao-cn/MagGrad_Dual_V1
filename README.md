@@ -1,6 +1,6 @@
-# MagGrad Dual V1
+# MagGrad AK/TMAG V1
 
-STM32H743 firmware for the dual magnetometer board.
+STM32H743 MagGrad firmware for the AK09973D / TMAG3001 / ICM42670 board.
 
 ## Build and Flash
 
@@ -19,8 +19,11 @@ Serial debug output is sent to both USB CDC and USART1 at 115200 baud.
 
 ```text
 STATUS
+INFO
+CAPS
+PROFILE AUTO|LOW_NOISE|STABLE
 MODE IDLE
-MODE CONT <sensors>
+MODE CONT <sensors> [hz]
 MODE TRIG <sensors>
 MODE TRIG_AUTO <sensors> <hz>
 RATE <hz>
@@ -47,7 +50,7 @@ TRIG       每收到一次 TRIG，触发 AK/TMAG 采一组；ICM 若被选中仍
 TRIG_AUTO  固件按 trigger_hz 自动触发 AK/TMAG；ICM 若被选中仍按 data-ready 连续输出
 ```
 
-`TRIG_AUTO` 频率范围为 `1..500 Hz`，命令未带频率时默认 `100 Hz`。`RATE <hz>` 只在当前 `TRIG_AUTO` 模式下修改自动触发频率，非法频率返回 `ERR BAD_RATE`。
+`CONT` 和 `TRIG_AUTO` 都支持速率配置。`MODE CONT <sensors> [hz]` 设置连续采集/输出目标频率；`MODE TRIG_AUTO <sensors> <hz>` 设置自动触发频率。`RATE <hz>` 对当前 `CONT` 或 `TRIG_AUTO` 模式生效；`TRIG_AUTO` 频率范围为 `1..500 Hz`，连续模式目标频率范围为 `1..1000 Hz`。
 
 LED 状态指示：
 
@@ -74,6 +77,8 @@ python3 tools/usb_read.py --cmd "RATE 50" --duration 5
 ```text
 MODE TRIG_AUTO ALL 100
 RATE 50
+PROFILE LOW_NOISE
+MODE CONT AK_ICM 200
 MODE TRIG AK_ICM
 TRIG
 MODE IDLE

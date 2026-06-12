@@ -104,10 +104,10 @@ The `.ioc` file is the STM32CubeMX project. If modified:
 
 ### Build Output Location
 All outputs in `build/` directory:
-- `MagGrad_Dual_V1.elf` - ELF for debugging
-- `MagGrad_Dual_V1.bin` - Raw binary for flashing
-- `MagGrad_Dual_V1.hex` - HEX for programming tools
-- `MagGrad_Dual_V1.map` - Linker map (symbol sizes, memory usage)
+- `MagGrad_AK_TMAG_V1.elf` - ELF for debugging
+- `MagGrad_AK_TMAG_V1.bin` - Raw binary for flashing
+- `MagGrad_AK_TMAG_V1.hex` - HEX for programming tools
+- `MagGrad_AK_TMAG_V1.map` - Linker map (symbol sizes, memory usage)
 
 ## Hardware Schematics Reference
 Datasheets in `doc/`:
