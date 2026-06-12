@@ -49,6 +49,16 @@ TRIG_AUTO  固件按 trigger_hz 自动触发 AK/TMAG；ICM 若被选中仍按 da
 
 `TRIG_AUTO` 频率范围为 `1..500 Hz`，命令未带频率时默认 `100 Hz`。`RATE <hz>` 只在当前 `TRIG_AUTO` 模式下修改自动触发频率，非法频率返回 `ERR BAD_RATE`。
 
+LED 状态指示：
+
+```text
+IDLE       蓝灯慢闪
+CONT       绿灯常亮
+TRIG       蓝灯常亮，收到 TRIG 并完成磁传感器触发读取时短暂绿闪
+TRIG_AUTO  青色常亮（绿 + 蓝）
+ERR        最近命令、初始化或触发错误时红灯快闪约 2 秒
+```
+
 示例：
 
 ```sh
@@ -209,6 +219,16 @@ on reads.
 the current muxed I2C3 hardware it caused TMAG initialization to fail during
 2026-05-18 testing. Keep `LP_LN=0` and `Operating_Mode=2h` for the stable
 continuous configuration.
+
+The runtime trigger path keeps TMAG devices in standby and starts a conversion
+with the I2C conversion-trigger control byte. Because each selected TCA channel
+contains devices sharing the same three ADDR-derived addresses, trigger all
+selected channels by issuing one trigger command per address group (`0x34`,
+`0x35`, `0x36`) while the selected TCA channel mask is active. The default
+trigger wait is `TMAG_TRIGGER_WAIT_US=800`, long enough for the current 3-axis,
+1x averaging configuration; override it with `EXTRA_DEFS` only for timing
+experiments. If this wait is too short, `TRIG`/`TRIG_AUTO` can repeatedly read
+the previous result registers and appear to have zero noise.
 
 Do not switch TMAG3001 `Device_Config_1.I2C_RD[1:0]` to the direct result-read
 mode without a matching recovery path. In testing, direct-read mode caused later

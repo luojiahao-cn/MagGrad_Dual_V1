@@ -111,6 +111,8 @@ typedef struct {
     uint32_t trigger_hz;
     uint32_t next_trigger_cycle;
     uint32_t next_ak_cycle;
+    uint32_t led_activity_until_ms;
+    uint32_t led_error_until_ms;
     uint8_t manual_trigger_pending;
     uint8_t ak_initialized;
     uint8_t tmag_initialized;
@@ -130,6 +132,12 @@ static uint32_t g_icm_frames = 0U;
 static uint32_t g_skipped = 0U;
 static uint32_t g_errors = 0U;
 static uint32_t g_last_stats_ms = 0U;
+
+#define LED_ACTIVE GPIO_PIN_RESET
+#define LED_INACTIVE GPIO_PIN_SET
+#define LED_ACTIVITY_MS 120U
+#define LED_ERROR_MS 2000U
+#define LED_SELF_TEST_MS 500U
 
 // USB CDC发送字符串
 extern USBD_HandleTypeDef hUsbDeviceFS;
@@ -278,6 +286,68 @@ static void Runtime_SendLine(const char *line)
     int n = snprintf(out, sizeof(out), "%s\r\n", line);
     if (n > 0) {
         USB_Send_String(out);
+    }
+}
+
+static void Runtime_SetLed(uint8_t red_on, uint8_t green_on, uint8_t blue_on)
+{
+    HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, red_on ? LED_ACTIVE : LED_INACTIVE);
+    HAL_GPIO_WritePin(LEDG_GPIO_Port, LEDG_Pin, green_on ? LED_ACTIVE : LED_INACTIVE);
+    HAL_GPIO_WritePin(LEDB_GPIO_Port, LEDB_Pin, blue_on ? LED_ACTIVE : LED_INACTIVE);
+}
+
+static void Runtime_LedSelfTest(void)
+{
+    Runtime_SetLed(1U, 0U, 0U);
+    HAL_Delay(LED_SELF_TEST_MS);
+    Runtime_SetLed(0U, 1U, 0U);
+    HAL_Delay(LED_SELF_TEST_MS);
+    Runtime_SetLed(0U, 0U, 1U);
+    HAL_Delay(LED_SELF_TEST_MS);
+    Runtime_SetLed(0U, 0U, 0U);
+}
+
+static void Runtime_MarkActivity(void)
+{
+    g_rt.led_activity_until_ms = HAL_GetTick() + LED_ACTIVITY_MS;
+}
+
+static void Runtime_MarkError(void)
+{
+    g_rt.led_error_until_ms = HAL_GetTick() + LED_ERROR_MS;
+}
+
+static void Runtime_UpdateLed(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if ((int32_t)(now - g_rt.led_error_until_ms) < 0) {
+        uint8_t on = ((now / 100U) & 1U) == 0U;
+        Runtime_SetLed(on, 0U, 0U);
+        return;
+    }
+
+    if ((int32_t)(now - g_rt.led_activity_until_ms) < 0) {
+        Runtime_SetLed(0U, 1U, 0U);
+        return;
+    }
+
+    switch (g_rt.strategy) {
+    case RT_STRATEGY_IDLE:
+        Runtime_SetLed(0U, 0U, ((now / 1000U) & 1U) == 0U);
+        break;
+    case RT_STRATEGY_CONT:
+        Runtime_SetLed(0U, 1U, 0U);
+        break;
+    case RT_STRATEGY_TRIG:
+        Runtime_SetLed(0U, 0U, 1U);
+        break;
+    case RT_STRATEGY_TRIG_AUTO:
+        Runtime_SetLed(0U, 1U, 1U);
+        break;
+    default:
+        Runtime_SetLed(1U, 0U, 0U);
+        break;
     }
 }
 
@@ -440,6 +510,7 @@ static void Runtime_HandleCommand(char *line)
 
     Runtime_Uppercase(line);
     if (strcmp(line, "ERR_OVERFLOW") == 0) {
+        Runtime_MarkError();
         Runtime_SendLine("ERR LINE_OVERFLOW");
         return;
     }
@@ -470,6 +541,7 @@ static void Runtime_HandleCommand(char *line)
             return;
         }
         if (ntok < 3) {
+            Runtime_MarkError();
             Runtime_SendLine("ERR BAD_MODE");
             return;
         }
@@ -482,23 +554,27 @@ static void Runtime_HandleCommand(char *line)
             strategy = RT_STRATEGY_TRIG_AUTO;
             hz = TRIG_AUTO_DEFAULT_HZ;
         } else {
+            Runtime_MarkError();
             Runtime_SendLine("ERR BAD_MODE");
             return;
         }
 
         if (!Runtime_ParseSensors(tok[2], &sensor_mask)) {
+            Runtime_MarkError();
             Runtime_SendLine("ERR BAD_SENSOR");
             return;
         }
 
         if (strategy == RT_STRATEGY_TRIG_AUTO && ntok >= 4) {
             if (!Runtime_ParseHz(tok[3], &hz)) {
+                Runtime_MarkError();
                 Runtime_SendLine("ERR BAD_RATE");
                 return;
             }
         }
 
         if (!Runtime_EnsureSensors(sensor_mask, strategy)) {
+            Runtime_MarkError();
             Runtime_SendLine("ERR INIT");
             return;
         }
@@ -516,10 +592,12 @@ static void Runtime_HandleCommand(char *line)
     if (strcmp(tok[0], "RATE") == 0) {
         uint32_t hz;
         if (ntok < 2 || !Runtime_ParseHz(tok[1], &hz)) {
+            Runtime_MarkError();
             Runtime_SendLine("ERR BAD_RATE");
             return;
         }
         if (g_rt.strategy != RT_STRATEGY_TRIG_AUTO) {
+            Runtime_MarkError();
             Runtime_SendLine("ERR BAD_MODE");
             return;
         }
@@ -533,6 +611,7 @@ static void Runtime_HandleCommand(char *line)
 
     if (strcmp(tok[0], "TRIG") == 0) {
         if (g_rt.strategy != RT_STRATEGY_TRIG && g_rt.strategy != RT_STRATEGY_TRIG_AUTO) {
+            Runtime_MarkError();
             Runtime_SendLine("ERR BAD_MODE");
             return;
         }
@@ -546,6 +625,7 @@ static void Runtime_HandleCommand(char *line)
     }
 
     Runtime_SendLine("ERR UNKNOWN");
+    Runtime_MarkError();
 }
 
 static void Runtime_ProcessCommands(void)
@@ -606,8 +686,12 @@ static void Runtime_TriggerMagAndRead(uint8_t *binary_frame, size_t binary_frame
 #if SENSOR_OUTPUT_AK
         if (Sensor_AK09973D_TriggerSingle_All() != HAL_OK) {
             g_errors++;
+            Runtime_MarkError();
         }
         Runtime_ReadAKArray(binary_frame, binary_frame_size);
+        if (g_rt.strategy == RT_STRATEGY_TRIG) {
+            Runtime_MarkActivity();
+        }
 #endif
     }
 
@@ -615,8 +699,12 @@ static void Runtime_TriggerMagAndRead(uint8_t *binary_frame, size_t binary_frame
 #if SENSOR_OUTPUT_TMAG
         if (Sensor_TMAG3001_TriggerSingle_All() != HAL_OK) {
             g_errors++;
+            Runtime_MarkError();
         }
         Runtime_ReadTMAGArray(binary_frame, binary_frame_size);
+        if (g_rt.strategy == RT_STRATEGY_TRIG) {
+            Runtime_MarkActivity();
+        }
 #endif
     }
 }
@@ -683,9 +771,8 @@ int main(void)
   MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_GPIO_WritePin(LEDR_GPIO_Port, LEDR_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(LEDG_GPIO_Port, LEDG_Pin, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(LEDB_GPIO_Port, LEDB_Pin, GPIO_PIN_SET);
+  Runtime_SetLed(0U, 0U, 0U);
+  Runtime_LedSelfTest();
 
   HAL_Delay(100);
   HAL_Delay(2000);  // 等待 USB CDC 准备好
@@ -740,13 +827,7 @@ int main(void)
     Runtime_ProcessCommands();
 #endif
 
-    // LED 状态指示
-    static uint32_t last_toggle = 0;
-    if (HAL_GetTick() - last_toggle > 500)
-    {
-        HAL_GPIO_TogglePin(LEDG_GPIO_Port, LEDG_Pin);
-        last_toggle = HAL_GetTick();
-    }
+    Runtime_UpdateLed();
 
     /* USER CODE END 3 */
   }
